@@ -170,6 +170,7 @@ class SupportAction(int, Enum):
     CLICK_KEYBOARD_BY_TEXT = 3  # 根据文本点击键盘
     CHOOSE_OPTION_BY_IMAGE = 4  # 根据图片选择选项
     REPLY_BY_CALCULATION_PROBLEM = 5  # 回复计算题
+    WEBVIEW_CHECKIN = 6  # WebView面板页面签到
 
     @property
     def desc(self):
@@ -179,6 +180,7 @@ class SupportAction(int, Enum):
             SupportAction.CLICK_KEYBOARD_BY_TEXT: "根据文本点击键盘",
             SupportAction.CHOOSE_OPTION_BY_IMAGE: "根据图片选择选项",
             SupportAction.REPLY_BY_CALCULATION_PROBLEM: "回复计算题",
+            SupportAction.WEBVIEW_CHECKIN: "WebView面板页面签到",
         }[self]
 
 
@@ -215,12 +217,22 @@ class ReplyByCalculationProblemAction(SignAction):
     )
 
 
+class WebViewCheckinAction(SignAction):
+    action: Literal[SupportAction.WEBVIEW_CHECKIN] = SupportAction.WEBVIEW_CHECKIN
+    bot_username: str  # bot的用户名
+    api_base_url: Optional[str] = None  # API基础URL，如果不提供则从WebView URL中提取
+    info_endpoint: str = "/api/v1/tg/info"  # 获取用户信息的端点
+    checkin_endpoint: str = "/api/v1/tg/checkin"  # 签到的端点
+    extra_headers: Optional[dict] = None  # 额外的请求头
+
+
 ActionT: TypeAlias = Union[
     SendTextAction,
     SendDiceAction,
     ClickKeyboardByTextAction,
     ChooseOptionByImageAction,
     ReplyByCalculationProblemAction,
+    WebViewCheckinAction,
 ]
 
 
@@ -284,6 +296,8 @@ class SignChatV3(BaseJSONConfig):
                     action.text[:15] + "..." if len(action.text) > 15 else action.text
                 )
                 details = f"Click: {text_preview}"
+            elif isinstance(action, WebViewCheckinAction):
+                details = f"Bot: {action.bot_username}"
 
             if details:
                 action_text = f"{i}. [{action_type}] {details}"

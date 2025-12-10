@@ -54,6 +54,7 @@ from tg_signer.config import (
     SignConfigV3,
     SupportAction,
     UDPForward,
+    WebViewCheckinAction,
 )
 
 from .ai_tools import AITools, OpenAIConfigManager
@@ -344,7 +345,13 @@ class BaseUserWorker(Generic[ConfigT]):
             config = self.reconfig()
         else:
             with open(self.config_file, "r", encoding="utf-8") as fp:
-                config, from_old = cfg_cls.load(json.load(fp))
+                result = cfg_cls.load(json.load(fp))
+                if result is None:
+                    raise ValueError(
+                        f"配置文件 {self.config_file} 格式不正确或版本不匹配。"
+                        f"请检查配置文件格式是否符合要求。"
+                    )
+                config, from_old = result
                 if from_old:
                     self.write_config(config)
         self.config = config
@@ -937,11 +944,124 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return True
         return False
 
+    async def _webview_checkin(self, action: WebViewCheckinAction):
+        """执行 WebView 面板页面签到"""
+        from pyrogram.raw.functions.messages import RequestWebView
+        from pyrogram.raw.functions.users import GetFullUser
+        
+        try:
+            # 1. 获取 bot 的 peer
+            bot_peer = await self.app.resolve_peer(action.bot_username)
+            
+            # 2. 获取 bot 的完整信息
+            user_full = await self.app.invoke(GetFullUser(id=bot_peer))
+            
+            # 3. 获取 bot 的菜单按钮 URL
+            if not user_full.full_user.bot_info or not user_full.full_user.bot_info.menu_button:
+                self.log(f"Bot {action.bot_username} 没有菜单按钮", level="WARNING")
+                return False
+            
+            url = user_full.full_user.bot_info.menu_button.url
+            
+            # 4. 请求 WebView 获取认证 URL
+            url_auth = (
+                await self.app.invoke(
+                    RequestWebView(
+                        peer=bot_peer,
+                        bot=bot_peer,
+                        platform="ios",
+                        url=url
+                    )
+                )
+            ).url
+            
+            # 5. 从 URL 中提取 tgWebAppData 参数
+            from urllib.parse import urlparse, parse_qs
+            scheme = urlparse(url_auth)
+            params = parse_qs(scheme.fragment)
+            webapp_data = params.get("tgWebAppData", [""])[0]
+            
+            if not webapp_data:
+                self.log("无法从 WebView URL 中提取 tgWebAppData", level="WARNING")
+                return False
+            
+            # 6. 构建 API 基础 URL
+            if action.api_base_url:
+                base_url = action.api_base_url
+            else:
+                parsed_url = urlparse(url_auth)
+                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            url_info = f"{base_url}{action.info_endpoint}"
+            url_checkin = f"{base_url}{action.checkin_endpoint}"
+            
+            # 7. 准备请求头
+            headers = {"X-Initdata": webapp_data}
+            if action.extra_headers:
+                headers.update(action.extra_headers)
+            
+            # 8. 使用 httpx 发送请求
+            async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+                # 先获取用户信息
+                self.log("正在获取用户信息...")
+                resp_info = await client.get(url_info)
+                info_results = resp_info.json()
+                
+                if info_results.get("message") != "Success":
+                    self.log(f"获取用户信息失败: {info_results.get('message', '未知错误')}", level="WARNING")
+                    return False
+                
+                # 获取当前余额
+                current_balance = info_results.get("data", {}).get("balance", 0)
+                self.log(f"当前余额: {current_balance}")
+                
+                # 检查下次签到时间
+                next_checkin_str = info_results.get("data", {}).get("next_check_in")
+                if next_checkin_str:
+                    from datetime import datetime, timezone
+                    next_checkin_time = datetime.fromisoformat(
+                        next_checkin_str.split(".")[0].replace("Z", "+00:00")
+                    ).replace(tzinfo=timezone.utc)
+                    
+                    if next_checkin_time > datetime.now(timezone.utc):
+                        self.log(f"还未到签到时间，下次签到时间: {next_checkin_time}", level="INFO")
+                        return False
+                
+                # 执行签到
+                self.log("正在执行签到...")
+                resp = await client.post(url_checkin)
+                results = resp.json()
+                message = results.get("message", "")
+                
+                if any(s in message for s in ("未找到用户", "权限错误")):
+                    self.log(f"签到失败: 账户错误 - {message}", level="WARNING")
+                    return False
+                
+                if "Failed" in message:
+                    self.log(f"签到失败: {message}", level="WARNING")
+                    return False
+                elif "Success" in message:
+                    coin = results.get("data", {}).get("coin", 0)
+                    new_balance = current_balance + coin
+                    self.log(f"签到成功: +{coin} 分 -> {new_balance} 分")
+                    return True
+                else:
+                    self.log(f"接收到异常返回信息: {results}", level="WARNING")
+                    return False
+                    
+        except Exception as e:
+            self.log(f"WebView 签到失败: {e}", level="ERROR")
+            import traceback
+            self.log(traceback.format_exc(), level="DEBUG")
+            return False
+
     async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=10):
         if isinstance(action, SendTextAction):
             return await self.send_message(chat.chat_id, action.text, chat.delete_after)
         elif isinstance(action, SendDiceAction):
             return await self.send_dice(chat.chat_id, action.dice, chat.delete_after)
+        elif isinstance(action, WebViewCheckinAction):
+            return await self._webview_checkin(action)
         self.context.waiter.add(chat.chat_id)
         start = time.perf_counter()
         last_message = None
