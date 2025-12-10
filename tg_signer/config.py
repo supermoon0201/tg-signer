@@ -180,7 +180,7 @@ class SupportAction(int, Enum):
             SupportAction.CLICK_KEYBOARD_BY_TEXT: "根据文本点击键盘",
             SupportAction.CHOOSE_OPTION_BY_IMAGE: "根据图片选择选项",
             SupportAction.REPLY_BY_CALCULATION_PROBLEM: "回复计算题",
-            SupportAction.WEBVIEW_CHECKIN: "WebView面板页面签到",
+            SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
         }[self]
 
 
