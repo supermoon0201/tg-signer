@@ -11,7 +11,7 @@ ARG INSTALL_SPEEDUP=true
 # ============================================================================
 # Builder Stage: Compile Python code to executable using PyInstaller
 # ============================================================================
-FROM python:${PY_VERSION}-slim AS builder
+FROM python:${PY_VERSION}-slim-bookworm AS builder
 
 # Configure Debian mirrors (Tsinghua University)
 RUN echo "Types: deb\n\

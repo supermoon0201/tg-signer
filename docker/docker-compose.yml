@@ -1,21 +1,27 @@
 networks:
-  tg_host:
-    external: false
+  scoobydoo:
+    external: true
 
 services:
-  tg-signer:
+  tg-signer-yl:
+    ports:
+      - "127.0.0.1:8119:8119"
     build:
       context: .
-      dockerfile: CN.Dockerfile
+      dockerfile: ./docker/Build.Dockerfile
       args:
         TZ: ${TZ:-Asia/Shanghai}
-    container_name: tg-signer
-    command: ["/bin/bash", "start.sh"]
+        INSTALL_GUI: "true"
+    container_name: tg-signer-yl
+    command: ["webgui", "--host", "0.0.0.0", "--port", "8119"]
     volumes:
-      - $PWD:/opt/tg-signer
+      - ./data:/app
     environment:
-      - TG_PROXY=socks5://172.17.0.1:7890
+    #   - TG_PROXY=socks5://172.17.0.1:7890
       - TZ=${TZ:-Asia/Shanghai}
+      - OPENAI_API_KEY=AIzaSyAqRcsoCc9d9NIHsCdEZMrPPyZekaBPRks
+      - OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+      - OPENAI_MODEL=models/gemini-2.5-flash
     networks:
-      - tg_host
+      - scoobydoo
     restart: unless-stopped
