@@ -1,0 +1,24 @@
+{
+  "_version": 3,
+  "chats": [
+    {
+      "chat_id": 5511237690,
+      "name": "Nebula Bot",
+      "delete_after": null,
+      "actions": [
+        {
+          "action": 6,
+          "bot_username": "Nebula_Account_bot",
+          "api_base_url": null,
+          "info_endpoint": "/api/v1/tg/info",
+          "checkin_endpoint": "/api/v1/tg/checkin",
+          "extra_headers": null
+        }
+      ],
+      "action_interval": 1.0
+    }
+  ],
+  "sign_at": "08:05:00",
+  "random_seconds": 0,
+  "sign_interval": 1
+}
