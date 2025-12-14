@@ -6,18 +6,11 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from datetime import time as dt_time
-from typing import (
-    Annotated,
-    BinaryIO,
-    Generic,
-    List,
-    Optional,
-    Type,
-    TypeVar,
-    Union,
-)
+from datetime import timedelta, timezone
+from typing import (Annotated, BinaryIO, Generic, List, Optional, Type,
+                    TypeVar, Union)
 from urllib import parse
 
 import httpx
@@ -30,32 +23,16 @@ from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
 from pyrogram.storage import MemoryStorage
-from pyrogram.types import (
-    Chat,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    Object,
-    User,
-)
+from pyrogram.types import (Chat, InlineKeyboardButton, InlineKeyboardMarkup,
+                            Message, Object, User)
 
-from tg_signer.config import (
-    ActionT,
-    BaseJSONConfig,
-    ChooseOptionByImageAction,
-    ClickKeyboardByTextAction,
-    HttpCallback,
-    MatchConfig,
-    MonitorConfig,
-    ReplyByCalculationProblemAction,
-    SendDiceAction,
-    SendTextAction,
-    SignChatV3,
-    SignConfigV3,
-    SupportAction,
-    UDPForward,
-    WebViewCheckinAction,
-)
+from tg_signer.config import (ActionT, BaseJSONConfig,
+                              ChooseOptionByImageAction,
+                              ClickKeyboardByTextAction, HttpCallback,
+                              MatchConfig, MonitorConfig,
+                              ReplyByCalculationProblemAction, SendDiceAction,
+                              SendTextAction, SignChatV3, SignConfigV3,
+                              SupportAction, UDPForward, WebViewCheckinAction)
 
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.bark import bark_send
@@ -1004,7 +981,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             ).url
             
             # 5. 从 URL 中提取 tgWebAppData 参数
-            from urllib.parse import urlparse, parse_qs
+            from urllib.parse import parse_qs, urlparse
             scheme = urlparse(url_auth)
             params = parse_qs(scheme.fragment)
             webapp_data = params.get("tgWebAppData", [""])[0]
@@ -1065,8 +1042,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     
                     if next_checkin_time > datetime.now(timezone.utc):
                         self.log(f"还未到签到时间，下次签到时间: {next_checkin_time}", level="INFO")
-                        # 注意：此处不发送Bark通知，因为这是正常的跳过情况，不是失败
-                        # 避免在每次检查时都发送通知打扰用户
+                        # 发送信息通知，让用户知道系统正在运行
+                        # 转换为北京时间显示
+                        beijing_tz = timezone(timedelta(hours=8))
+                        beijing_time = next_checkin_time.astimezone(beijing_tz)
+                        await self._send_bark_notification(
+                            action,
+                            f"WebView签到 - {action.bot_username}",
+                            f"未到签到时间\n下次签到: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)",
+                        )
                         return False
                 
                 # 执行签到
