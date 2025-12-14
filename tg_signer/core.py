@@ -58,6 +58,7 @@ from tg_signer.config import (
 )
 
 from .ai_tools import AITools, OpenAIConfigManager
+from .notification.bark import bark_send
 from .notification.server_chan import sc_send
 from .utils import UserInput, print_to_user
 
@@ -944,7 +945,28 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return True
         return False
 
-    async def _webview_checkin(self, action: WebViewCheckinAction):
+    async def _send_bark_notification(
+        self, action: WebViewCheckinAction, title: str, body: str
+    ) -> None:
+        """发送Bark通知的辅助方法"""
+        if action.bark_enabled:
+            bark_url = os.environ.get("BARK_URL")
+            if not bark_url:
+                self.log("未配置Bark URL（环境变量BARK_URL）", level="WARNING")
+                return
+
+            bark_sound = os.environ.get("BARK_SOUND")
+            bark_group = os.environ.get("BARK_GROUP")
+
+            await bark_send(
+                bark_url=bark_url,
+                title=title,
+                body=body,
+                sound=bark_sound,
+                group=bark_group,
+            )
+
+    async def _webview_checkin(self, action: WebViewCheckinAction) -> bool:
         """执行 WebView 面板页面签到"""
         from pyrogram.raw.functions.messages import RequestWebView
         from pyrogram.raw.functions.users import GetFullUser
@@ -958,7 +980,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             
             # 3. 获取 bot 的菜单按钮 URL
             if not user_full.full_user.bot_info or not user_full.full_user.bot_info.menu_button:
-                self.log(f"Bot {action.bot_username} 没有菜单按钮", level="WARNING")
+                error_msg = "Bot 没有菜单按钮"
+                self.log(f"Bot {action.bot_username} {error_msg}", level="WARNING")
+                await self._send_bark_notification(
+                    action,
+                    f"WebView签到失败 - {action.bot_username}",
+                    f"签到失败: {error_msg}",
+                )
                 return False
             
             url = user_full.full_user.bot_info.menu_button.url
@@ -982,7 +1010,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             webapp_data = params.get("tgWebAppData", [""])[0]
             
             if not webapp_data:
-                self.log("无法从 WebView URL 中提取 tgWebAppData", level="WARNING")
+                error_msg = "无法从 WebView URL 中提取 tgWebAppData"
+                self.log(error_msg, level="WARNING")
+                await self._send_bark_notification(
+                    action,
+                    f"WebView签到失败 - {action.bot_username}",
+                    f"签到失败: {error_msg}",
+                )
                 return False
             
             # 6. 构建 API 基础 URL
@@ -1008,7 +1042,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 info_results = resp_info.json()
                 
                 if info_results.get("message") != "Success":
-                    self.log(f"获取用户信息失败: {info_results.get('message', '未知错误')}", level="WARNING")
+                    error_msg = f"获取用户信息失败: {info_results.get('message', '未知错误')}"
+                    self.log(error_msg, level="WARNING")
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到失败 - {action.bot_username}",
+                        f"签到失败: {error_msg}",
+                    )
                     return False
                 
                 # 获取当前余额
@@ -1025,6 +1065,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     
                     if next_checkin_time > datetime.now(timezone.utc):
                         self.log(f"还未到签到时间，下次签到时间: {next_checkin_time}", level="INFO")
+                        # 注意：此处不发送Bark通知，因为这是正常的跳过情况，不是失败
+                        # 避免在每次检查时都发送通知打扰用户
                         return False
                 
                 # 执行签到
@@ -1034,25 +1076,53 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 message = results.get("message", "")
                 
                 if any(s in message for s in ("未找到用户", "权限错误")):
-                    self.log(f"签到失败: 账户错误 - {message}", level="WARNING")
+                    error_msg = f"账户错误 - {message}"
+                    self.log(f"签到失败: {error_msg}", level="WARNING")
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到失败 - {action.bot_username}",
+                        f"签到失败: {error_msg}",
+                    )
                     return False
-                
+
                 if "Failed" in message:
                     self.log(f"签到失败: {message}", level="WARNING")
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到失败 - {action.bot_username}",
+                        f"签到失败: {message}",
+                    )
                     return False
                 elif "Success" in message:
                     coin = results.get("data", {}).get("coin", 0)
                     new_balance = current_balance + coin
                     self.log(f"签到成功: +{coin} 分 -> {new_balance} 分")
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到成功 - {action.bot_username}",
+                        f"签到成功: +{coin} 分 -> {new_balance} 分",
+                    )
                     return True
                 else:
-                    self.log(f"接收到异常返回信息: {results}", level="WARNING")
+                    error_msg = f"接收到异常返回信息: {results}"
+                    self.log(error_msg, level="WARNING")
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到失败 - {action.bot_username}",
+                        f"签到失败: 异常返回信息",
+                    )
                     return False
-                    
+
         except Exception as e:
-            self.log(f"WebView 签到失败: {e}", level="ERROR")
+            error_msg = str(e)
+            self.log(f"WebView 签到失败: {error_msg}", level="ERROR")
             import traceback
             self.log(traceback.format_exc(), level="DEBUG")
+            await self._send_bark_notification(
+                action,
+                f"WebView签到异常 - {action.bot_username}",
+                f"签到异常: {error_msg}",
+            )
             return False
 
     async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=10):

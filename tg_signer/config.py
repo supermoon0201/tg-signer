@@ -224,6 +224,7 @@ class WebViewCheckinAction(SignAction):
     info_endpoint: str = "/api/v1/tg/info"  # 获取用户信息的端点
     checkin_endpoint: str = "/api/v1/tg/checkin"  # 签到的端点
     extra_headers: Optional[dict] = None  # 额外的请求头
+    bark_enabled: bool = False  # 是否启用Bark通知（URL等配置从环境变量读取）
 
 
 ActionT: TypeAlias = Union[
