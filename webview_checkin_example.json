@@ -12,7 +12,8 @@
           "api_base_url": null,
           "info_endpoint": "/api/v1/tg/info",
           "checkin_endpoint": "/api/v1/tg/checkin",
-          "extra_headers": null
+          "extra_headers": null,
+          "bark_enabled": true
         }
       ],
       "action_interval": 1.0
