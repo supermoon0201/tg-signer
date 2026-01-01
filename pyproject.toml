@@ -25,6 +25,7 @@ dependencies = [
     "json_repair",
     "typing-extensions",
     "httpx",
+    "Pillow",
 ]
 
 [dependency-groups]
