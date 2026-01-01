@@ -27,6 +27,7 @@ from pyrogram.types import (Chat, InlineKeyboardButton, InlineKeyboardMarkup,
                             Message, Object, User)
 
 from tg_signer.config import (ActionT, BaseJSONConfig,
+                              ChooseOptionByGifAction,
                               ChooseOptionByImageAction,
                               ClickKeyboardByTextAction, HttpCallback,
                               MatchConfig, MonitorConfig,
@@ -607,6 +608,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 elif action == SupportAction.REPLY_BY_CALCULATION_PROBLEM:
                     print_to_user("计算题将使用大模型回答。")
                     actions.append(ReplyByCalculationProblemAction())
+                elif action == SupportAction.CHOOSE_OPTION_BY_GIF:
+                    print_to_user(
+                        "GIF验证码识别将使用大模型回答。\n"
+                        "此动作用于处理：Bot先发送带按钮的消息，再发送GIF验证码的场景。"
+                    )
+                    actions.append(ChooseOptionByGifAction())
                 else:
                     raise ValueError(f"不支持的动作: {action}")
                 if local_input_("是否继续添加动作？(y/N)：").strip().lower() != "y":
@@ -922,6 +929,83 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return True
         return False
 
+    async def _choose_option_by_gif(
+        self,
+        action: ChooseOptionByGifAction,
+        button_message: Message,
+        gif_message: Message,
+    ) -> bool:
+        """
+        根据GIF验证码选择正确选项
+        
+        Args:
+            action: ChooseOptionByGifAction动作
+            button_message: 包含选项按钮的消息
+            gif_message: 包含GIF验证码的消息
+        
+        Returns:
+            是否成功选择选项
+        """
+        reply_markup = button_message.reply_markup
+        if not isinstance(reply_markup, InlineKeyboardMarkup):
+            self.log("按钮消息没有InlineKeyboard", level="WARNING")
+            return False
+        
+        # 获取按钮选项
+        flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
+        option_to_btn = {btn.text: btn for btn in flat_buttons if btn.text}
+        
+        if not option_to_btn:
+            self.log("未找到可选按钮", level="WARNING")
+            return False
+        
+        # 下载GIF
+        self.log("检测到GIF验证码，尝试调用大模型进行识别")
+        
+        # GIF可能是animation或document
+        if gif_message.animation:
+            file_id = gif_message.animation.file_id
+        elif gif_message.document:
+            file_id = gif_message.document.file_id
+        elif gif_message.photo:
+            file_id = gif_message.photo.file_id
+        else:
+            self.log("无法获取GIF文件", level="WARNING")
+            return False
+        
+        gif_buffer: BinaryIO = await self.app.download_media(file_id, in_memory=True)
+        gif_buffer.seek(0)
+        gif_bytes = gif_buffer.read()
+        
+        options = list(option_to_btn)
+        self.log(f"选项列表: {options}")
+        
+        # 调用AI识别GIF验证码
+        result_index = await self.get_ai_tools().recognize_gif_code(
+            gif_bytes,
+            options,
+        )
+        
+        if result_index < 0 or result_index >= len(options):
+            self.log(f"AI返回的索引超出范围: {result_index}", level="WARNING")
+            return False
+        
+        result = options[result_index]
+        self.log(f"GIF验证码识别结果为: {result}")
+        
+        target_btn = option_to_btn.get(result.strip())
+        if not target_btn:
+            self.log("未找到匹配的按钮", level="WARNING")
+            return False
+        
+        await self.request_callback_answer(
+            self.app,
+            button_message.chat.id,
+            button_message.id,
+            target_btn.callback_data,
+        )
+        return True
+
     async def _send_bark_notification(
         self, action: WebViewCheckinAction, title: str, body: str
     ) -> None:
@@ -1116,6 +1200,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return await self.send_dice(chat.chat_id, action.dice, chat.delete_after)
         elif isinstance(action, WebViewCheckinAction):
             return await self._webview_checkin(action)
+        
+        # 特殊处理GIF验证码场景：需要等待两条消息
+        if isinstance(action, ChooseOptionByGifAction):
+            return await self._wait_for_gif_action(chat, action, timeout)
+        
         self.context.waiter.add(chat.chat_id)
         start = time.perf_counter()
         last_message = None
@@ -1145,6 +1234,63 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     return None
                 self.log(f"忽略消息: {readable_message(message)}")
         self.log(f"等待超时: \nchat: \n{chat} \naction: {action}", level="WARNING")
+        return None
+
+    async def _wait_for_gif_action(
+        self, chat: SignChatV3, action: ChooseOptionByGifAction, timeout=10
+    ):
+        """
+        处理GIF验证码场景：等待按钮消息和GIF消息，然后执行识别
+        """
+        self.context.waiter.add(chat.chat_id)
+        start = time.perf_counter()
+        button_message = None
+        gif_message = None
+        processed_ids = set()
+        
+        while time.perf_counter() - start < timeout:
+            await asyncio.sleep(0.3)
+            messages_dict = self.context.chat_messages.get(chat.chat_id)
+            if not messages_dict:
+                continue
+            
+            messages = [m for m in messages_dict.values() if m and m.id not in processed_ids]
+            
+            for message in messages:
+                processed_ids.add(message.id)
+                self.context.waiting_message = message
+                
+                # 检查是否是带按钮的消息
+                if (
+                    message.reply_markup
+                    and isinstance(message.reply_markup, InlineKeyboardMarkup)
+                ):
+                    button_message = message
+                    self.log(f"检测到按钮消息: {readable_message(message)}")
+                
+                # 检查是否是GIF/动图消息
+                if message.animation or (
+                    message.document
+                    and message.document.mime_type
+                    and "gif" in message.document.mime_type.lower()
+                ):
+                    gif_message = message
+                    self.log(f"检测到GIF消息: {readable_message(message)}")
+                
+                # 如果两者都有，执行识别
+                if button_message and gif_message:
+                    ok = await self._choose_option_by_gif(action, button_message, gif_message)
+                    if ok:
+                        self.context.waiter.sub(chat.chat_id)
+                        self.context.chat_messages[chat.chat_id][button_message.id] = None
+                        self.context.chat_messages[chat.chat_id][gif_message.id] = None
+                        return None
+                    else:
+                        # 识别失败，重置继续等待
+                        button_message = None
+                        gif_message = None
+        
+        self.log(f"等待GIF验证码超时: \nchat: \n{chat} \naction: {action}", level="WARNING")
         return None
 
     async def request_callback_answer(

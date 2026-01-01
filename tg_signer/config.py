@@ -171,6 +171,7 @@ class SupportAction(int, Enum):
     CHOOSE_OPTION_BY_IMAGE = 4  # 根据图片选择选项
     REPLY_BY_CALCULATION_PROBLEM = 5  # 回复计算题
     WEBVIEW_CHECKIN = 6  # WebView面板页面签到
+    CHOOSE_OPTION_BY_GIF = 7  # 根据GIF图片选择选项
 
     @property
     def desc(self):
@@ -181,6 +182,7 @@ class SupportAction(int, Enum):
             SupportAction.CHOOSE_OPTION_BY_IMAGE: "根据图片选择选项",
             SupportAction.REPLY_BY_CALCULATION_PROBLEM: "回复计算题",
             SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
+            SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
         }[self]
 
 
@@ -217,6 +219,13 @@ class ReplyByCalculationProblemAction(SignAction):
     )
 
 
+class ChooseOptionByGifAction(SignAction):
+    """根据GIF图片选择选项，用于处理验证码在单独GIF消息中的场景"""
+    action: Literal[SupportAction.CHOOSE_OPTION_BY_GIF] = (
+        SupportAction.CHOOSE_OPTION_BY_GIF
+    )
+
+
 class WebViewCheckinAction(SignAction):
     action: Literal[SupportAction.WEBVIEW_CHECKIN] = SupportAction.WEBVIEW_CHECKIN
     bot_username: str  # bot的用户名
@@ -233,6 +242,7 @@ ActionT: TypeAlias = Union[
     ClickKeyboardByTextAction,
     ChooseOptionByImageAction,
     ReplyByCalculationProblemAction,
+    ChooseOptionByGifAction,
     WebViewCheckinAction,
 ]
 
@@ -327,6 +337,7 @@ class SignChatV3(BaseJSONConfig):
         ai_actions = {
             SupportAction.CHOOSE_OPTION_BY_IMAGE,
             SupportAction.REPLY_BY_CALCULATION_PROBLEM,
+            SupportAction.CHOOSE_OPTION_BY_GIF,
         }
         return any(action.action in ai_actions for action in self.actions)
 
