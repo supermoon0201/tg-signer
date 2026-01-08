@@ -162,24 +162,14 @@ class AITools:
         model: str = None,
         temperature=0.1,
     ) -> int:
-        """
-        识别GIF中的验证码并选择正确选项
-        
-        Args:
-            gif_bytes: GIF图片的字节数据
-            options: 可选项列表
-            client: OpenAI客户端
-            model: 模型名称
-            temperature: 温度参数
-            
-        Returns:
-            匹配选项的索引
-        """
         from io import BytesIO
-        from PIL import Image
-        
-        # 提取GIF的多帧并合成
-        gif = Image.open(BytesIO(gif_bytes))
+        from PIL import Image, UnidentifiedImageError
+
+        try:
+            gif = Image.open(BytesIO(gif_bytes))
+        except UnidentifiedImageError as e:
+            raise ValueError(f"无法识别 GIF 图片: {e}") from e
+
         frames = []
         try:
             while True:
@@ -187,25 +177,29 @@ class AITools:
                 gif.seek(gif.tell() + 1)
         except EOFError:
             pass
-        
+        except Exception as e:
+            frames = []
+
         # 选择关键帧（最多5帧）
         num_frames = min(5, len(frames))
         if num_frames > 1:
-            frame_indices = [i * (len(frames) - 1) // (num_frames - 1) for i in range(num_frames)]
+            frame_indices = [
+                i * (len(frames) - 1) // (num_frames - 1) for i in range(num_frames)
+            ]
         else:
             frame_indices = [0]
-        
+
         # 合成帧为单张图片
         if frames:
             base_frame = frames[0]
             composite = Image.new("RGBA", base_frame.size, (255, 255, 255, 255))
             alpha_per_frame = 255 // num_frames
-            
+
             for idx in frame_indices:
                 frame = frames[idx].copy()
                 frame.putalpha(alpha_per_frame)
                 composite = Image.alpha_composite(composite, frame)
-            
+
             # 转换为RGB用于识别
             final_image = composite.convert("RGB")
             buffer = BytesIO()
@@ -213,7 +207,7 @@ class AITools:
             image_bytes = buffer.getvalue()
         else:
             image_bytes = gif_bytes
-        
+
         sys_prompt = """你是一个**验证码识别助手**。用户会给你一张图片（可能是GIF的帧合成），图片中包含一个验证码文本。
 你需要：
 1. 识别出图片中的验证码文本
@@ -229,7 +223,7 @@ class AITools:
         client = client or self.client
         model = model or self.default_model
         text_query = f"请识别图片中的验证码，并从以下选项中选择最匹配的：{json.dumps(list(enumerate(options)), ensure_ascii=False)}"
-        
+
         messages = [
             {"role": "system", "content": sys_prompt},
             {

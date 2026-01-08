@@ -9,8 +9,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from datetime import time as dt_time
 from datetime import timedelta, timezone
-from typing import (Annotated, BinaryIO, Generic, List, Optional, Type,
-                    TypeVar, Union)
+from typing import Annotated, BinaryIO, Generic, List, Optional, Type, TypeVar, Union
 from urllib import parse
 
 import httpx
@@ -23,17 +22,33 @@ from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
 from pyrogram.storage import MemoryStorage
-from pyrogram.types import (Chat, InlineKeyboardButton, InlineKeyboardMarkup,
-                            Message, Object, User)
+from pyrogram.types import (
+    Chat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    Object,
+    User,
+)
 
-from tg_signer.config import (ActionT, BaseJSONConfig,
-                              ChooseOptionByGifAction,
-                              ChooseOptionByImageAction,
-                              ClickKeyboardByTextAction, HttpCallback,
-                              MatchConfig, MonitorConfig,
-                              ReplyByCalculationProblemAction, SendDiceAction,
-                              SendTextAction, SignChatV3, SignConfigV3,
-                              SupportAction, UDPForward, WebViewCheckinAction)
+from tg_signer.config import (
+    ActionT,
+    BaseJSONConfig,
+    ChooseOptionByGifAction,
+    ChooseOptionByImageAction,
+    ClickKeyboardByTextAction,
+    HttpCallback,
+    MatchConfig,
+    MonitorConfig,
+    ReplyByCalculationProblemAction,
+    SendDiceAction,
+    SendTextAction,
+    SignChatV3,
+    SignConfigV3,
+    SupportAction,
+    UDPForward,
+    WebViewCheckinAction,
+)
 
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.bark import bark_send
@@ -937,12 +952,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ) -> bool:
         """
         根据GIF验证码选择正确选项
-        
+
         Args:
             action: ChooseOptionByGifAction动作
             button_message: 包含选项按钮的消息
             gif_message: 包含GIF验证码的消息
-        
+
         Returns:
             是否成功选择选项
         """
@@ -950,18 +965,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if not isinstance(reply_markup, InlineKeyboardMarkup):
             self.log("按钮消息没有InlineKeyboard", level="WARNING")
             return False
-        
+
         # 获取按钮选项
         flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
         option_to_btn = {btn.text: btn for btn in flat_buttons if btn.text}
-        
+
         if not option_to_btn:
             self.log("未找到可选按钮", level="WARNING")
             return False
-        
+
         # 下载GIF
         self.log("检测到GIF验证码，尝试调用大模型进行识别")
-        
+
         # GIF可能是animation或document
         if gif_message.animation:
             file_id = gif_message.animation.file_id
@@ -972,32 +987,35 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         else:
             self.log("无法获取GIF文件", level="WARNING")
             return False
-        
+
         gif_buffer: BinaryIO = await self.app.download_media(file_id, in_memory=True)
         gif_buffer.seek(0)
         gif_bytes = gif_buffer.read()
-        
+
         options = list(option_to_btn)
         self.log(f"选项列表: {options}")
-        
-        # 调用AI识别GIF验证码
-        result_index = await self.get_ai_tools().recognize_gif_code(
-            gif_bytes,
-            options,
-        )
-        
+
+        try:
+            result_index = await self.get_ai_tools().recognize_gif_code(
+                gif_bytes,
+                options,
+            )
+        except Exception as e:
+            self.log(f"GIF验证码识别失败: {e}", level="ERROR")
+            return False
+
         if result_index < 0 or result_index >= len(options):
             self.log(f"AI返回的索引超出范围: {result_index}", level="WARNING")
             return False
-        
+
         result = options[result_index]
         self.log(f"GIF验证码识别结果为: {result}")
-        
+
         target_btn = option_to_btn.get(result.strip())
         if not target_btn:
             self.log("未找到匹配的按钮", level="WARNING")
             return False
-        
+
         await self.request_callback_answer(
             self.app,
             button_message.chat.id,
@@ -1031,16 +1049,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         """执行 WebView 面板页面签到"""
         from pyrogram.raw.functions.messages import RequestWebView
         from pyrogram.raw.functions.users import GetFullUser
-        
+
         try:
             # 1. 获取 bot 的 peer
             bot_peer = await self.app.resolve_peer(action.bot_username)
-            
+
             # 2. 获取 bot 的完整信息
             user_full = await self.app.invoke(GetFullUser(id=bot_peer))
-            
+
             # 3. 获取 bot 的菜单按钮 URL
-            if not user_full.full_user.bot_info or not user_full.full_user.bot_info.menu_button:
+            if (
+                not user_full.full_user.bot_info
+                or not user_full.full_user.bot_info.menu_button
+            ):
                 error_msg = "Bot 没有菜单按钮"
                 self.log(f"Bot {action.bot_username} {error_msg}", level="WARNING")
                 await self._send_bark_notification(
@@ -1049,27 +1070,23 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     f"签到失败: {error_msg}",
                 )
                 return False
-            
+
             url = user_full.full_user.bot_info.menu_button.url
-            
+
             # 4. 请求 WebView 获取认证 URL
             url_auth = (
                 await self.app.invoke(
-                    RequestWebView(
-                        peer=bot_peer,
-                        bot=bot_peer,
-                        platform="ios",
-                        url=url
-                    )
+                    RequestWebView(peer=bot_peer, bot=bot_peer, platform="ios", url=url)
                 )
             ).url
-            
+
             # 5. 从 URL 中提取 tgWebAppData 参数
             from urllib.parse import parse_qs, urlparse
+
             scheme = urlparse(url_auth)
             params = parse_qs(scheme.fragment)
             webapp_data = params.get("tgWebAppData", [""])[0]
-            
+
             if not webapp_data:
                 error_msg = "无法从 WebView URL 中提取 tgWebAppData"
                 self.log(error_msg, level="WARNING")
@@ -1079,31 +1096,33 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     f"签到失败: {error_msg}",
                 )
                 return False
-            
+
             # 6. 构建 API 基础 URL
             if action.api_base_url:
                 base_url = action.api_base_url
             else:
                 parsed_url = urlparse(url_auth)
                 base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-            
+
             url_info = f"{base_url}{action.info_endpoint}"
             url_checkin = f"{base_url}{action.checkin_endpoint}"
-            
+
             # 7. 准备请求头
             headers = {"X-Initdata": webapp_data}
             if action.extra_headers:
                 headers.update(action.extra_headers)
-            
+
             # 8. 使用 httpx 发送请求
             async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
                 # 先获取用户信息
                 self.log("正在获取用户信息...")
                 resp_info = await client.get(url_info)
                 info_results = resp_info.json()
-                
+
                 if info_results.get("message") != "Success":
-                    error_msg = f"获取用户信息失败: {info_results.get('message', '未知错误')}"
+                    error_msg = (
+                        f"获取用户信息失败: {info_results.get('message', '未知错误')}"
+                    )
                     self.log(error_msg, level="WARNING")
                     await self._send_bark_notification(
                         action,
@@ -1111,21 +1130,25 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         f"签到失败: {error_msg}",
                     )
                     return False
-                
+
                 # 获取当前余额
                 current_balance = info_results.get("data", {}).get("balance", 0)
                 self.log(f"当前余额: {current_balance}")
-                
+
                 # 检查下次签到时间
                 next_checkin_str = info_results.get("data", {}).get("next_check_in")
                 if next_checkin_str:
                     from datetime import datetime, timezone
+
                     next_checkin_time = datetime.fromisoformat(
                         next_checkin_str.split(".")[0].replace("Z", "+00:00")
                     ).replace(tzinfo=timezone.utc)
-                    
+
                     if next_checkin_time > datetime.now(timezone.utc):
-                        self.log(f"还未到签到时间，下次签到时间: {next_checkin_time}", level="INFO")
+                        self.log(
+                            f"还未到签到时间，下次签到时间: {next_checkin_time}",
+                            level="INFO",
+                        )
                         # 发送信息通知，让用户知道系统正在运行
                         # 转换为北京时间显示
                         beijing_tz = timezone(timedelta(hours=8))
@@ -1136,13 +1159,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             f"未到签到时间\n下次签到: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)",
                         )
                         return False
-                
+
                 # 执行签到
                 self.log("正在执行签到...")
                 resp = await client.post(url_checkin)
                 results = resp.json()
                 message = results.get("message", "")
-                
+
                 if any(s in message for s in ("未找到用户", "权限错误")):
                     error_msg = f"账户错误 - {message}"
                     self.log(f"签到失败: {error_msg}", level="WARNING")
@@ -1185,6 +1208,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             error_msg = str(e)
             self.log(f"WebView 签到失败: {error_msg}", level="ERROR")
             import traceback
+
             self.log(traceback.format_exc(), level="DEBUG")
             await self._send_bark_notification(
                 action,
@@ -1200,11 +1224,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return await self.send_dice(chat.chat_id, action.dice, chat.delete_after)
         elif isinstance(action, WebViewCheckinAction):
             return await self._webview_checkin(action)
-        
+
         # 特殊处理GIF验证码场景：需要等待两条消息
         if isinstance(action, ChooseOptionByGifAction):
             return await self._wait_for_gif_action(chat, action, timeout)
-        
+
         self.context.waiter.add(chat.chat_id)
         start = time.perf_counter()
         last_message = None
@@ -1247,27 +1271,28 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         button_message = None
         gif_message = None
         processed_ids = set()
-        
+
         while time.perf_counter() - start < timeout:
             await asyncio.sleep(0.3)
             messages_dict = self.context.chat_messages.get(chat.chat_id)
             if not messages_dict:
                 continue
-            
-            messages = [m for m in messages_dict.values() if m and m.id not in processed_ids]
-            
+
+            messages = [
+                m for m in messages_dict.values() if m and m.id not in processed_ids
+            ]
+
             for message in messages:
                 processed_ids.add(message.id)
                 self.context.waiting_message = message
-                
+
                 # 检查是否是带按钮的消息
-                if (
-                    message.reply_markup
-                    and isinstance(message.reply_markup, InlineKeyboardMarkup)
+                if message.reply_markup and isinstance(
+                    message.reply_markup, InlineKeyboardMarkup
                 ):
                     button_message = message
                     self.log(f"检测到按钮消息: {readable_message(message)}")
-                
+
                 # 检查是否是GIF/动图消息
                 if message.animation or (
                     message.document
@@ -1276,21 +1301,27 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 ):
                     gif_message = message
                     self.log(f"检测到GIF消息: {readable_message(message)}")
-                
+
                 # 如果两者都有，执行识别
                 if button_message and gif_message:
-                    ok = await self._choose_option_by_gif(action, button_message, gif_message)
+                    ok = await self._choose_option_by_gif(
+                        action, button_message, gif_message
+                    )
                     if ok:
                         self.context.waiter.sub(chat.chat_id)
-                        self.context.chat_messages[chat.chat_id][button_message.id] = None
+                        self.context.chat_messages[chat.chat_id][button_message.id] = (
+                            None
+                        )
                         self.context.chat_messages[chat.chat_id][gif_message.id] = None
                         return None
                     else:
                         # 识别失败，重置继续等待
                         button_message = None
                         gif_message = None
-        
-        self.log(f"等待GIF验证码超时: \nchat: \n{chat} \naction: {action}", level="WARNING")
+
+        self.log(
+            f"等待GIF验证码超时: \nchat: \n{chat} \naction: {action}", level="WARNING"
+        )
         return None
 
     async def request_callback_answer(

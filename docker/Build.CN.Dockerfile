@@ -15,16 +15,16 @@ FROM python:${PY_VERSION}-slim-bookworm AS builder
 
 # Configure Debian mirrors (Tsinghua University)
 RUN echo "Types: deb\n\
-    URIs: https://mirrors.tuna.tsinghua.edu.cn/debian\n\
-    Suites: bookworm bookworm-updates bookworm-backports\n\
-    Components: main contrib non-free non-free-firmware\n\
-    Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\n\
-    Types: deb\n\
-    URIs: https://security.debian.org/debian-security\n\
-    Suites: bookworm-security\n\
-    Components: main contrib non-free non-free-firmware\n\
-    Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
-    > /etc/apt/sources.list.d/debian.sources
+URIs: https://mirrors.tuna.tsinghua.edu.cn/debian\n\
+Suites: bookworm bookworm-updates bookworm-backports\n\
+Components: main contrib non-free non-free-firmware\n\
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\n\
+Types: deb\n\
+URIs: https://security.debian.org/debian-security\n\
+Suites: bookworm-security\n\
+Components: main contrib non-free non-free-firmware\n\
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
+> /etc/apt/sources.list.d/debian.sources
 
 # Environment variables
 ENV PIP_DISABLE_PIP_VERSION_CHECK=on \
@@ -57,16 +57,16 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow && \
+    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx && \
     if [ "${INSTALL_SPEEDUP}" = "true" ]; then \
-    python -m pip install --no-cache-dir \
-    --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    tgcrypto; \
+        python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
+        tgcrypto; \
     fi && \
     if [ "${INSTALL_GUI}" = "true" ]; then \
-    python -m pip install --no-cache-dir \
-    --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    nicegui; \
+        python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
+        nicegui; \
     fi && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
@@ -93,7 +93,7 @@ RUN set -ex && \
     --workpath /tmp/pyi-build \
     --distpath /build/dist" && \
     if [ "${INSTALL_GUI}" = "true" ]; then \
-    PYINSTALLER_ARGS="${PYINSTALLER_ARGS} --hidden-import=tg_signer.webui --collect-all nicegui"; \
+        PYINSTALLER_ARGS="${PYINSTALLER_ARGS} --hidden-import=tg_signer.webui --collect-all nicegui"; \
     fi && \
     python -m PyInstaller ${PYINSTALLER_ARGS} tg_signer/__main__.py
 
@@ -104,16 +104,16 @@ FROM debian:bookworm-slim AS runtime
 
 # Configure Debian mirrors (Tsinghua University)
 RUN echo "Types: deb\n\
-    URIs: https://mirrors.tuna.tsinghua.edu.cn/debian\n\
-    Suites: bookworm bookworm-updates bookworm-backports\n\
-    Components: main contrib non-free non-free-firmware\n\
-    Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\n\
-    Types: deb\n\
-    URIs: https://security.debian.org/debian-security\n\
-    Suites: bookworm-security\n\
-    Components: main contrib non-free non-free-firmware\n\
-    Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
-    > /etc/apt/sources.list.d/debian.sources
+URIs: https://mirrors.tuna.tsinghua.edu.cn/debian\n\
+Suites: bookworm bookworm-updates bookworm-backports\n\
+Components: main contrib non-free non-free-firmware\n\
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\n\
+Types: deb\n\
+URIs: https://security.debian.org/debian-security\n\
+Suites: bookworm-security\n\
+Components: main contrib non-free non-free-firmware\n\
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
+> /etc/apt/sources.list.d/debian.sources
 
 # Environment variables
 ENV TZ=Asia/Shanghai \

@@ -44,14 +44,14 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
     "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow && \
     if [ "${INSTALL_SPEEDUP}" = "true" ]; then \
-    python -m pip install --no-cache-dir \
-    --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    tgcrypto; \
+        python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
+        tgcrypto; \
     fi && \
     if [ "${INSTALL_GUI}" = "true" ]; then \
-    python -m pip install --no-cache-dir \
-    --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    nicegui; \
+        python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
+        nicegui; \
     fi && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
@@ -78,7 +78,7 @@ RUN set -ex && \
     --workpath /tmp/pyi-build \
     --distpath /build/dist" && \
     if [ "${INSTALL_GUI}" = "true" ]; then \
-    PYINSTALLER_ARGS="${PYINSTALLER_ARGS} --hidden-import=tg_signer.webui --collect-all nicegui"; \
+        PYINSTALLER_ARGS="${PYINSTALLER_ARGS} --hidden-import=tg_signer.webui --collect-all nicegui"; \
     fi && \
     python -m PyInstaller ${PYINSTALLER_ARGS} tg_signer/__main__.py
 
