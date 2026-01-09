@@ -164,21 +164,121 @@ class AITools:
     ) -> int:
         from io import BytesIO
         from PIL import Image, UnidentifiedImageError
+        import logging
 
+        logger = logging.getLogger(__name__)
+
+        # 验证下载的字节数据
+        if not gif_bytes:
+            raise ValueError("下载的 GIF 数据为空")
+
+        logger.info(f"GIF 文件大小: {len(gif_bytes)} 字节")
+
+        # 检查文件头以识别格式
+        file_header = gif_bytes[:16].hex() if len(gif_bytes) >= 16 else gif_bytes.hex()
+        logger.info(f"文件头 (hex): {file_header}")
+
+        # 保存文件用于调试
         try:
-            gif = Image.open(BytesIO(gif_bytes))
-        except UnidentifiedImageError as e:
-            raise ValueError(f"无法识别 GIF 图片: {e}") from e
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as tmp:
+                tmp.write(gif_bytes)
+                tmp_path = tmp.name
+            logger.info(f"已保存原始文件到: {tmp_path}")
+        except Exception as e:
+            logger.warning(f"无法保存调试文件: {e}")
 
+        # 尝试使用PIL打开图片
         frames = []
         try:
-            while True:
-                frames.append(gif.copy().convert("RGBA"))
-                gif.seek(gif.tell() + 1)
-        except EOFError:
-            pass
-        except Exception as e:
-            frames = []
+            gif = Image.open(BytesIO(gif_bytes))
+            logger.info(f"成功打开图片，格式: {gif.format}, 大小: {gif.size}")
+
+            # 提取所有帧
+            try:
+                while True:
+                    frames.append(gif.copy().convert("RGBA"))
+                    gif.seek(gif.tell() + 1)
+            except EOFError:
+                pass
+            except Exception as e:
+                logger.warning(f"提取帧时出错: {e}")
+                if not frames:
+                    frames = []
+
+        except UnidentifiedImageError as e:
+            # PIL无法识别，尝试作为视频处理
+            logger.warning(f"PIL无法识别图片格式，尝试作为视频处理: {e}")
+
+            try:
+                import cv2
+                import numpy as np
+
+                # 将字节数据写入临时文件
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+                    tmp.write(gif_bytes)
+                    video_path = tmp.name
+
+                logger.info(f"尝试使用OpenCV读取视频: {video_path}")
+
+                # 使用OpenCV读取视频
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    raise ValueError("无法打开视频文件")
+
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                logger.info(f"视频总帧数: {frame_count}")
+
+                # 提取关键帧
+                num_frames = min(5, frame_count)
+                if num_frames > 1:
+                    frame_indices = [
+                        i * (frame_count - 1) // (num_frames - 1) for i in range(num_frames)
+                    ]
+                else:
+                    frame_indices = [0]
+
+                for idx in frame_indices:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    ret, frame = cap.read()
+                    if ret:
+                        # 转换BGR到RGB
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        # 转换为PIL Image
+                        pil_image = Image.fromarray(frame_rgb).convert("RGBA")
+                        frames.append(pil_image)
+
+                cap.release()
+
+                # 清理临时文件
+                try:
+                    os.unlink(video_path)
+                except:
+                    pass
+
+                logger.info(f"成功从视频提取 {len(frames)} 帧")
+
+            except ImportError:
+                raise ValueError(
+                    f"无法识别 GIF 图片 (大小: {len(gif_bytes)} 字节, 文件头: {file_header})，"
+                    f"且未安装 opencv-python 库来处理视频格式。请安装: pip install opencv-python"
+                ) from e
+            except Exception as video_error:
+                raise ValueError(
+                    f"无法识别 GIF 图片 (大小: {len(gif_bytes)} 字节, 文件头: {file_header})，"
+                    f"尝试作为视频处理也失败: {video_error}"
+                ) from e
+
+        # 验证是否成功提取帧
+        if not frames:
+            raise ValueError("无法从图片/视频中提取任何帧")
+
+        logger.info(f"成功提取 {len(frames)} 帧")
+
+        # 合成帧为单张图片
+        base_frame = frames[0]
+        composite = Image.new("RGBA", base_frame.size, (255, 255, 255, 255))
 
         # 选择关键帧（最多5帧）
         num_frames = min(5, len(frames))
@@ -189,24 +289,20 @@ class AITools:
         else:
             frame_indices = [0]
 
-        # 合成帧为单张图片
-        if frames:
-            base_frame = frames[0]
-            composite = Image.new("RGBA", base_frame.size, (255, 255, 255, 255))
-            alpha_per_frame = 255 // num_frames
+        alpha_per_frame = 255 // num_frames
 
-            for idx in frame_indices:
-                frame = frames[idx].copy()
-                frame.putalpha(alpha_per_frame)
-                composite = Image.alpha_composite(composite, frame)
+        for idx in frame_indices:
+            frame = frames[idx].copy()
+            frame.putalpha(alpha_per_frame)
+            composite = Image.alpha_composite(composite, frame)
 
-            # 转换为RGB用于识别
-            final_image = composite.convert("RGB")
-            buffer = BytesIO()
-            final_image.save(buffer, format="PNG")
-            image_bytes = buffer.getvalue()
-        else:
-            image_bytes = gif_bytes
+        # 转换为RGB用于识别
+        final_image = composite.convert("RGB")
+        buffer = BytesIO()
+        final_image.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+
+        logger.info(f"合成图片大小: {len(image_bytes)} 字节")
 
         sys_prompt = """你是一个**验证码识别助手**。用户会给你一张图片（可能是GIF的帧合成），图片中包含一个验证码文本。
 你需要：
