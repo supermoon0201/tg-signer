@@ -42,7 +42,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow && \
+    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow opencv-python && \
     if [ "${INSTALL_SPEEDUP}" = "true" ]; then \
         python -m pip install --no-cache-dir \
         --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
@@ -98,6 +98,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     libssl3 \
     libffi8 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && echo "${TZ}" > /etc/timezone

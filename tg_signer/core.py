@@ -949,6 +949,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         action: ChooseOptionByGifAction,
         button_message: Message,
         gif_message: Message,
+        max_retries: int = 3,
     ) -> bool:
         """
         根据GIF验证码选择正确选项
@@ -957,6 +958,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             action: ChooseOptionByGifAction动作
             button_message: 包含选项按钮的消息
             gif_message: 包含GIF验证码的消息
+            max_retries: 最大重试次数
 
         Returns:
             是否成功选择选项
@@ -995,34 +997,50 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         options = list(option_to_btn)
         self.log(f"选项列表: {options}")
 
-        try:
-            result_index = await self.get_ai_tools().recognize_gif_code(
-                gif_bytes,
-                options,
-            )
-        except Exception as e:
-            self.log(f"GIF验证码识别失败: {e}", level="ERROR")
-            return False
+        # 重试逻辑
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    self.log(f"第 {attempt + 1} 次尝试识别GIF验证码...")
+                
+                result_index = await self.get_ai_tools().recognize_gif_code(
+                    gif_bytes,
+                    options,
+                )
+                
+                if result_index < 0 or result_index >= len(options):
+                    self.log(f"AI返回的索引超出范围: {result_index}", level="WARNING")
+                    last_error = ValueError(f"索引超出范围: {result_index}")
+                    continue
 
-        if result_index < 0 or result_index >= len(options):
-            self.log(f"AI返回的索引超出范围: {result_index}", level="WARNING")
-            return False
+                result = options[result_index]
+                self.log(f"GIF验证码识别结果为: {result}")
 
-        result = options[result_index]
-        self.log(f"GIF验证码识别结果为: {result}")
+                target_btn = option_to_btn.get(result.strip())
+                if not target_btn:
+                    self.log("未找到匹配的按钮", level="WARNING")
+                    last_error = ValueError("未找到匹配的按钮")
+                    continue
 
-        target_btn = option_to_btn.get(result.strip())
-        if not target_btn:
-            self.log("未找到匹配的按钮", level="WARNING")
-            return False
-
-        await self.request_callback_answer(
-            self.app,
-            button_message.chat.id,
-            button_message.id,
-            target_btn.callback_data,
-        )
-        return True
+                await self.request_callback_answer(
+                    self.app,
+                    button_message.chat.id,
+                    button_message.id,
+                    target_btn.callback_data,
+                )
+                self.log(f"GIF验证码识别成功（尝试 {attempt + 1}/{max_retries} 次）")
+                return True
+                
+            except Exception as e:
+                last_error = e
+                self.log(f"第 {attempt + 1} 次识别失败: {e}", level="WARNING")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # 重试前等待2秒
+        
+        # 所有重试都失败
+        self.log(f"GIF验证码识别失败，已重试 {max_retries} 次: {last_error}", level="ERROR")
+        return False
 
     async def _send_bark_notification(
         self, action: WebViewCheckinAction, title: str, body: str
