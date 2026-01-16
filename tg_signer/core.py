@@ -1029,6 +1029,39 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     button_message.id,
                     target_btn.callback_data,
                 )
+                
+                # 等待Bot响应，检查验证结果
+                await asyncio.sleep(1.5)  # 等待Bot处理
+                
+                # 检查是否收到验证码错误的响应
+                verification_failed = False
+                chat_id = button_message.chat.id
+                if chat_id in self.context.chat_messages:
+                    for msg in list(self.context.chat_messages[chat_id].values()):
+                        if msg is None:
+                            continue
+                        # 检查消息文本或图片标题中是否包含"验证码错误"
+                        msg_text = ""
+                        if msg.text:
+                            msg_text = msg.text
+                        elif msg.caption:
+                            msg_text = msg.caption
+                        
+                        if "验证码错误" in msg_text:
+                            verification_failed = True
+                            self.log(
+                                f"验证码验证失败，Bot返回: {msg_text[:50]}",
+                                level="WARNING"
+                            )
+                            break
+                
+                if verification_failed:
+                    last_error = ValueError("验证码错误")
+                    if attempt < max_retries - 1:
+                        self.log(f"将进行第 {attempt + 2} 次重试...")
+                        await asyncio.sleep(2)
+                    continue
+                
                 self.log(f"GIF验证码识别成功（尝试 {attempt + 1}/{max_retries} 次）")
                 return True
                 
