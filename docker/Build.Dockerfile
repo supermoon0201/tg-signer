@@ -42,7 +42,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow opencv-python && \
+    "kurigram<=2.2.7" click pydantic openai croniter json_repair typing-extensions httpx Pillow opencv-python-headless && \
     if [ "${INSTALL_SPEEDUP}" = "true" ]; then \
         python -m pip install --no-cache-dir \
         --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
@@ -69,15 +69,10 @@ RUN set -ex && \
     --hidden-import=tg_signer.cli \
     --hidden-import=tg_signer.notification \
     --hidden-import=cv2 \
-    --hidden-import=cv2.cv2 \
     --collect-all kurigram \
-    --collect-all cv2 \
-    --collect-all opencv-python \
-    --collect-binaries cv2 \
     --copy-metadata openai \
     --copy-metadata httpx \
     --copy-metadata click \
-    --copy-metadata opencv-python \
     --strip \
     --noupx \
     --clean \
