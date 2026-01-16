@@ -68,10 +68,16 @@ RUN set -ex && \
     --add-data assets:assets \
     --hidden-import=tg_signer.cli \
     --hidden-import=tg_signer.notification \
+    --hidden-import=cv2 \
+    --hidden-import=cv2.cv2 \
     --collect-all kurigram \
+    --collect-all cv2 \
+    --collect-all opencv-python \
+    --collect-binaries cv2 \
     --copy-metadata openai \
     --copy-metadata httpx \
     --copy-metadata click \
+    --copy-metadata opencv-python \
     --strip \
     --noupx \
     --clean \
@@ -92,7 +98,7 @@ ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# Install runtime dependencies
+# Install runtime dependencies (including OpenCV dependencies)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
@@ -103,6 +109,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && echo "${TZ}" > /etc/timezone
