@@ -8,10 +8,9 @@ services:
       - "127.0.0.1:8119:8119"
     build:
       context: .
-      dockerfile: ./docker/Build.Dockerfile
+      dockerfile: ./docker/Run.Dockerfile
       args:
         TZ: ${TZ:-Asia/Shanghai}
-        INSTALL_GUI: "true"
     container_name: tg-signer-yl
     # command: ["webgui", "--host", "0.0.0.0", "--port", "8119"]
     command: ["run", "nebula"]
