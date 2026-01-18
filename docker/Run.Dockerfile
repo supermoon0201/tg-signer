@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && echo "${TZ}" > /etc/timezone
 
-WORKDIR /app
+WORKDIR /src
 
 # Copy source code
 COPY pyproject.toml ./
@@ -42,7 +42,10 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    -e ".[speedup,gui]"
+    ".[speedup,gui]"
+
+# Data directory for runtime
+WORKDIR /app
 
 ENTRYPOINT ["python", "-m", "tg_signer"]
 CMD ["--help"]
