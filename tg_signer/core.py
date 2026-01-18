@@ -730,14 +730,31 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def sign_a_chat(
         self,
         chat: SignChatV3,
+        max_flow_retries: int = 3,
     ):
         self.log(f"开始执行: \n{chat}")
-        for action in chat.actions:
-            self.log(f"等待处理动作: {action}")
-            await self.wait_for(chat, action)
-            self.log(f"处理完成: {action}")
-            self.context.waiting_message = None
-            await asyncio.sleep(chat.action_interval)
+        
+        for flow_attempt in range(max_flow_retries):
+            if flow_attempt > 0:
+                self.log(f"第 {flow_attempt + 1} 次从头重新执行签到流程...")
+                await asyncio.sleep(2)
+            
+            need_retry = False
+            for action in chat.actions:
+                self.log(f"等待处理动作: {action}")
+                result = await self.wait_for(chat, action)
+                if result == "RETRY_FLOW":
+                    self.log("验证码失败，将从头重新执行签到流程", level="WARNING")
+                    need_retry = True
+                    break
+                self.log(f"处理完成: {action}")
+                self.context.waiting_message = None
+                await asyncio.sleep(chat.action_interval)
+            
+            if not need_retry:
+                return  # 成功完成
+        
+        self.log(f"签到流程重试 {max_flow_retries} 次后仍失败", level="ERROR")
 
     async def run(
         self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
@@ -1316,6 +1333,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ):
         """
         处理GIF验证码场景：等待按钮消息和GIF消息，然后执行识别
+        验证码失败时返回特殊标记，由上层重新执行整个签到流程
         """
         self.context.waiter.add(chat.chat_id)
         start = time.perf_counter()
@@ -1366,13 +1384,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         self.context.chat_messages[chat.chat_id][gif_message.id] = None
                         return None
                     else:
-                        # 识别失败，重置继续等待
-                        button_message = None
-                        gif_message = None
+                        # 识别失败，返回重试标记
+                        self.context.waiter.sub(chat.chat_id)
+                        self.context.chat_messages[chat.chat_id].clear()
+                        return "RETRY_FLOW"
 
         self.log(
             f"等待GIF验证码超时: \nchat: \n{chat} \naction: {action}", level="WARNING"
         )
+        self.context.waiter.sub(chat.chat_id)
         return None
 
     async def request_callback_answer(
