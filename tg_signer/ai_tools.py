@@ -150,6 +150,10 @@ class AITools:
             stream=False,
             temperature=temperature,
         )
+        if not completion.choices:
+            raise ValueError(
+                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
+            )
         message = completion.choices[0].message
         result = json_repair.loads(message.content)
         return int(result["option"])
@@ -343,6 +347,10 @@ class AITools:
             stream=False,
             temperature=temperature,
         )
+        if not completion.choices:
+            raise ValueError(
+                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
+            )
         message = completion.choices[0].message
         result = json_repair.loads(message.content)
         return int(result["option"])
@@ -368,6 +376,10 @@ class AITools:
             stream=False,
             temperature=temperature,
         )
+        if not completion.choices:
+            raise ValueError(
+                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
+            )
         return completion.choices[0].message.content.strip()
 
     async def get_reply(
@@ -392,5 +404,9 @@ class AITools:
             model=model,
             stream=False,
         )
+        if not completion.choices:
+            raise ValueError(
+                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
+            )
         message = completion.choices[0].message
         return message.content
