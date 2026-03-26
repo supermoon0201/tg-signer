@@ -58,8 +58,10 @@ from tg_signer.config import (
     UDPForward,
 )
 
+from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.server_chan import sc_send
+from .sign_record_store import SignRecordStore
 from .utils import UserInput, print_to_user
 
 logger = logging.getLogger("tg-signer")
@@ -69,6 +71,15 @@ DICE_EMOJIS = ("🎲", "🎯", "🏀", "⚽", "🎳", "🎰")
 Session.START_TIMEOUT = 5  # 原始超时时间为2秒，但一些代理访问会超时，所以这里调大一点
 
 OPENAI_USE_PROMPT = "当前任务需要配置大模型，请确保运行前正确设置`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`等环境变量，或通过`tg-signer llm-config`持久化配置。"
+
+CHAT_TYPE_LABELS = {
+    ChatType.BOT: "BOT",
+    ChatType.GROUP: "群组",
+    ChatType.SUPERGROUP: "超级群组",
+    ChatType.CHANNEL: "频道",
+    ChatType.FORUM: "论坛群组",
+    ChatType.DIRECT: "频道私信",
+}
 
 
 def readable_message(message: Message):
@@ -87,20 +98,17 @@ def readable_message(message: Message):
 
 
 def readable_chat(chat: Chat):
-    if chat.type == ChatType.BOT:
-        type_ = "BOT"
-    elif chat.type == ChatType.GROUP:
-        type_ = "群组"
-    elif chat.type == ChatType.SUPERGROUP:
-        type_ = "超级群组"
-    elif chat.type == ChatType.CHANNEL:
-        type_ = "频道"
-    else:
-        type_ = "个人"
+    type_ = CHAT_TYPE_LABELS.get(chat.type, "个人")
 
     none_or_dash = lambda x: x or "-"  # noqa: E731
 
     return f"id: {chat.id}, username: {none_or_dash(chat.username)}, title: {none_or_dash(chat.title)}, type: {type_}, name: {none_or_dash(chat.first_name)}"
+
+
+def chat_has_forum_topics(chat: Chat) -> bool:
+    return chat.type == ChatType.FORUM or (
+        chat.type == ChatType.SUPERGROUP and chat.is_forum
+    )
 
 
 def readable_topic(topic) -> str:
@@ -134,7 +142,7 @@ _API_MAX_FLOODWAIT_RETRIES = 2
 RouteKey = tuple[int, Optional[int]]
 
 
-class Client(BaseClient):
+class Client(SafeGetForumTopics, BaseClient):
     def __init__(self, name: str, *args, **kwargs):
         key = kwargs.pop("key", None)
         super().__init__(name, *args, **kwargs)
@@ -191,9 +199,7 @@ class Client(BaseClient):
                 logger.info("The session_string has been loaded.")
         return self.session_string
 
-    async def log_out(
-        self,
-    ):
+    async def log_out(self):
         await super().log_out()
         if self.session_string_file.is_file():
             os.remove(self.session_string_file)
@@ -457,9 +463,11 @@ class BaseUserWorker(Generic[ConfigT]):
                     me = await self._call_telegram_api("users.GetFullUser", app.get_me)
 
                     async def load_latest_chats():
+                        chats = []
                         latest_chats = []
                         async for dialog in app.get_dialogs(limit=num_of_dialogs):
                             chat = dialog.chat
+                            chats.append(chat)
                             latest_chats.append(
                                 {
                                     "id": chat.id,
@@ -470,25 +478,28 @@ class BaseUserWorker(Generic[ConfigT]):
                                     "last_name": chat.last_name,
                                 }
                             )
-                            if print_chat:
-                                print_to_user(readable_chat(chat))
-                                if chat.type == ChatType.SUPERGROUP:
-                                    try:
-                                        topics = await self.get_forum_topics(
-                                            chat.id, limit=20
-                                        )
-                                        for topic in topics:
-                                            print_to_user(f"  {readable_topic(topic)}")
-                                    except errors.RPCError:
-                                        # Keep login robust: many chats don't support
-                                        # forum topics or the current account may not
-                                        # have permissions to read them.
-                                        pass
-                        return latest_chats
+                        return chats, latest_chats
 
-                    latest_chats = await self._call_telegram_api(
+                    chats, latest_chats = await self._call_telegram_api(
                         "messages.GetDialogs", load_latest_chats
                     )
+
+                    if print_chat:
+                        for chat in chats:
+                            print_to_user(readable_chat(chat))
+                            if chat_has_forum_topics(chat):
+                                try:
+                                    topics = await asyncio.wait_for(
+                                        self.get_forum_topics(chat.id, limit=20),
+                                        timeout=5,
+                                    )
+                                    for topic in topics:
+                                        print_to_user(f"  {readable_topic(topic)}")
+                                except (asyncio.TimeoutError, errors.RPCError):
+                                    # Keep login robust: many chats don't support
+                                    # forum topics or the current account may not
+                                    # have permissions to read them.
+                                    pass
 
                     with open(
                         self.get_user_dir(me).joinpath("latest_chats.json"),
@@ -729,6 +740,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             waiting_message=None,
         )
 
+    @property
+    def sign_record_store(self) -> SignRecordStore:
+        return SignRecordStore(self.workdir)
+
     @staticmethod
     def get_route_key(
         chat_id: int, message_thread_id: Optional[int] = None
@@ -740,6 +755,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         sign_record_dir = self.task_dir / str(self.user.id)
         make_dirs(sign_record_dir)
         return sign_record_dir / "sign_record.json"
+
+    @property
+    def legacy_sign_record_file(self):
+        return self.task_dir / "sign_record.json"
 
     def _ask_actions(
         self, input_: UserInput, available_actions: List[SupportAction] = None
@@ -882,14 +901,45 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return f"{sign_at.minute} {sign_at.hour} * * *"
 
     def load_sign_record(self):
-        sign_record = {}
-        if not self.sign_record_file.is_file():
-            with open(self.sign_record_file, "w", encoding="utf-8") as fp:
-                json.dump(sign_record, fp)
-        else:
-            with open(self.sign_record_file, "r", encoding="utf-8") as fp:
-                sign_record = json.load(fp)
-        return sign_record
+        user_id = str(self.user.id)
+        store = self.sign_record_store
+        if not store.has_records(self.task_name, user_id):
+            # Import legacy JSON lazily so existing workdirs keep working
+            # without requiring an explicit migration step first.
+            imported_paths = []
+            if store.import_json_file(
+                self.task_name,
+                user_id,
+                self.sign_record_file,
+                account=self._account,
+            ):
+                imported_paths.append(self.sign_record_file)
+            if store.import_json_file(
+                self.task_name,
+                user_id,
+                self.legacy_sign_record_file,
+                account=self._account,
+            ):
+                imported_paths.append(self.legacy_sign_record_file)
+            if imported_paths:
+                joined_paths = ", ".join(str(path) for path in imported_paths)
+                self.log(
+                    f"检测到旧版签到记录文件，已自动导入 SQLite: {joined_paths}。建议执行 `tg-signer migrate-sign-records` 统一迁移历史记录。",
+                    level="WARNING",
+                )
+        return store.load_records(self.task_name, user_id)
+
+    def persist_sign_record(
+        self, sign_record: dict[str, str], sign_date: str, signed_at: str
+    ) -> None:
+        sign_record[sign_date] = signed_at
+        self.sign_record_store.upsert_record(
+            self.task_name,
+            str(self.user.id),
+            sign_date,
+            signed_at,
+            account=self._account,
+        )
 
     async def sign_a_chat(
         self,
@@ -948,9 +998,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
                 self.context.chat_messages[route_key].clear()
                 await asyncio.sleep(config.sign_interval)
-            sign_record[str(now.date())] = now.isoformat()
-            with open(self.sign_record_file, "w", encoding="utf-8") as fp:
-                json.dump(sign_record, fp)
+            self.persist_sign_record(sign_record, str(now.date()), now.isoformat())
 
         def need_sign(last_date_str):
             if force_rerun:

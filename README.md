@@ -81,10 +81,12 @@ Commands:
   import                  导入配置，默认为从终端读取。
   list                    列出已有配置
   list-members            查询聊天（群或频道）的成员, 频道需要管理员权限
+  list-sign-records       列出最近N条签到记录
   list-topics             列出群组话题ID（message_thread_id）
   list-schedule-messages  显示已配置的定时消息
   llm-config              配置大模型API
   login                   登录账号（用于获取session）
+  migrate-sign-records    将签到记录从 JSON 迁移到 SQLite（默认保留原...
   logout                  登出账号并删除session文件
   automation              配置和运行自动化规则（推荐，覆盖monitor能力）
   monitor                 配置和运行监控
@@ -106,6 +108,8 @@ Commands:
 tg-signer run
 tg-signer run my_sign  # 不询问，直接运行'my_sign'任务
 tg-signer run-once my_sign  # 直接运行一次'my_sign'任务
+tg-signer list-sign-records linuxdo -n 5  # 查看任务 linuxdo 最近 5 条签到记录
+tg-signer migrate-sign-records  # 将.signer/signs 下的签到记录迁移到 SQLite
 tg-signer send-text 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本
 tg-signer send-text --message-thread-id 1 -- -1003763902761 checkin  # 发送到群组话题(message_thread_id=1)
 tg-signer send-text -- -10006758812 浇水  # 对于负数需要使用POSIX风格，在短横线'-'前方加上'--'
@@ -150,7 +154,7 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
-对于开启话题的超级群，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
+对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 
 ### 获取群组话题 ID
 
@@ -158,7 +162,7 @@ tg-signer login
 tg-signer list-topics --chat_id -1003763902761
 ```
 
-会输出该群组可见话题的 `message_thread_id`、标题及状态，便于配置签到到指定话题。
+会输出该论坛群组可见话题的 `message_thread_id`、标题及状态，便于配置签到到指定话题。
 
 ### 发送一次消息
 
@@ -504,11 +508,15 @@ tg-signer monitor run my_monitor
 
 ```
 .signer
-├── latest_chats.json  # 获取的最近对话
-├── me.json  # 个人信息
+├── .openai_config.json  # 可选，大模型配置
+├── data.sqlite3  # SQLite 签到记录库
 ├── monitors  # 监控
 │   ├── my_monitor  # 监控任务名
 │       └── config.json  # 监控配置
+├── users
+│   └── 123456789
+│       ├── latest_chats.json  # 获取的最近对话
+│       └── me.json  # 个人信息
 ├── automations  # 自动化规则
 │   ├── my_auto  # 自动化任务名
 │       ├── config.json  # 自动化配置
@@ -516,7 +524,12 @@ tg-signer monitor run my_monitor
 └── signs  # 签到任务
     └── linuxdo  # 签到任务名
         ├── config.json  # 签到配置
-        └── sign_record.json  # 签到记录
+        ├── 123456789
+        │   └── sign_record.json  # 旧版 JSON 签到记录（兼容迁移）
+        └── sign_record.json  # 更旧版 JSON 路径（兼容迁移）
 
-3 directories, 4 files
 ```
+
+迁移到 SQLite 后，新的签到记录只写入 `data.sqlite3`，但仍兼容读取旧
+`sign_record.json`。当运行任务时如果检测到旧 JSON，程序会输出提示并尝试将该任务
+的历史记录自动导入 SQLite。
