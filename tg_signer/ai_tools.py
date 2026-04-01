@@ -151,9 +151,7 @@ class AITools:
             temperature=temperature,
         )
         if not completion.choices:
-            raise ValueError(
-                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
-            )
+            raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
         message = completion.choices[0].message
         result = json_repair.loads(message.content)
         return int(result["option"])
@@ -166,9 +164,10 @@ class AITools:
         model: str = None,
         temperature=0.1,
     ) -> int:
-        from io import BytesIO
-        from PIL import Image, UnidentifiedImageError
         import logging
+        from io import BytesIO
+
+        from PIL import Image, UnidentifiedImageError
 
         logger = logging.getLogger(__name__)
 
@@ -184,9 +183,10 @@ class AITools:
 
         # 保存文件用于调试
         try:
-            import tempfile
             import os
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as tmp:
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp:
                 tmp.write(gif_bytes)
                 tmp_path = tmp.name
             logger.info(f"已保存原始文件到: {tmp_path}")
@@ -217,10 +217,9 @@ class AITools:
 
             try:
                 import cv2
-                import numpy as np
 
                 # 将字节数据写入临时文件
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
                     tmp.write(gif_bytes)
                     video_path = tmp.name
 
@@ -258,7 +257,7 @@ class AITools:
                 # 清理临时文件
                 try:
                     os.unlink(video_path)
-                except:
+                except OSError:
                     pass
 
                 logger.info(f"成功从视频提取 {len(frames)} 帧")
@@ -266,7 +265,7 @@ class AITools:
             except ImportError:
                 raise ValueError(
                     f"无法识别 GIF 图片 (大小: {len(gif_bytes)} 字节, 文件头: {file_header})，"
-                    f"且未安装 opencv-python 库来处理视频格式。请安装: pip install opencv-python"
+                    f"且未安装 OpenCV 相关依赖来处理视频格式。请安装: pip install opencv-python-headless"
                 ) from e
             except Exception as video_error:
                 raise ValueError(
@@ -348,9 +347,7 @@ class AITools:
             temperature=temperature,
         )
         if not completion.choices:
-            raise ValueError(
-                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
-            )
+            raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
         message = completion.choices[0].message
         result = json_repair.loads(message.content)
         return int(result["option"])
@@ -377,9 +374,7 @@ class AITools:
             temperature=temperature,
         )
         if not completion.choices:
-            raise ValueError(
-                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
-            )
+            raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
         return completion.choices[0].message.content.strip()
 
     async def get_reply(
@@ -405,8 +400,6 @@ class AITools:
             stream=False,
         )
         if not completion.choices:
-            raise ValueError(
-                f"OpenAI API 返回空结果，可能是内容审核或 API 错误。"
-            )
+            raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
         message = completion.choices[0].message
         return message.content

@@ -26,7 +26,7 @@ dependencies = [
     "typing-extensions",
     "httpx",
     "Pillow",
-    "opencv-python",
+    "opencv-python-headless",
 ]
 
 [dependency-groups]

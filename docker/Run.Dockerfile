@@ -12,18 +12,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=on \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-# Install system dependencies for OpenCV
+# Install system dependencies for headless OpenCV/video decoding
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     libssl3 \
     libffi8 \
     libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
     libgomp1 \
-    libgl1 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
@@ -42,7 +38,8 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
     python -m pip install --no-cache-dir \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    ".[speedup,gui]"
+    ".[speedup]" playwright && \
+    python -m playwright install --with-deps chromium
 
 # Data directory for runtime
 WORKDIR /app
