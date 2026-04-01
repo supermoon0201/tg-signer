@@ -354,6 +354,27 @@ class InteractiveSignerConfig:
                                 ).classes("w-full")
                             elif t == SupportAction.CLICK_KEYBOARD_BY_TEXT:
                                 inputs["text"] = ui.input("按钮文本").classes("w-full")
+                                inputs["repeat_until_complete"] = ui.checkbox(
+                                    "持续点击直到完成"
+                                )
+                                inputs["repeat_interval"] = ui.number(
+                                    "连续点击间隔（秒）",
+                                    value=0.8,
+                                    min=0,
+                                    step=0.1,
+                                ).classes("w-full")
+                                inputs["repeat_timeout"] = ui.number(
+                                    "连续点击超时（秒）",
+                                    value=8.0,
+                                    min=0.1,
+                                    step=0.5,
+                                ).classes("w-full")
+                                inputs["success_text"] = ui.input(
+                                    "成功提示文本（可选）"
+                                ).classes("w-full")
+                                inputs["already_done_text"] = ui.input(
+                                    "已签到提示文本（可选）"
+                                ).classes("w-full")
                             elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
                                 inputs["text"] = ui.input(
                                     "Telegram按钮文本"
@@ -418,7 +439,22 @@ class InteractiveSignerConfig:
                                 txt = inputs["text"].value
                                 if not txt:
                                     raise ValueError("请输入按钮文本")
-                                new_action = ClickKeyboardByTextAction(text=txt)
+                                new_action = ClickKeyboardByTextAction(
+                                    text=txt,
+                                    repeat_until_complete=bool(
+                                        inputs["repeat_until_complete"].value
+                                    ),
+                                    repeat_interval=float(
+                                        inputs["repeat_interval"].value or 0.8
+                                    ),
+                                    repeat_timeout=float(
+                                        inputs["repeat_timeout"].value or 8.0
+                                    ),
+                                    success_text=inputs["success_text"].value or None,
+                                    already_done_text=(
+                                        inputs["already_done_text"].value or None
+                                    ),
+                                )
                             elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
                                 txt = inputs["text"].value
                                 page_button_text = inputs["page_button_text"].value

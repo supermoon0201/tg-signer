@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
 
 from tg_signer.config import (
     ClickKeyboardByTextAction,
@@ -808,6 +809,159 @@ async def test_click_keyboard_by_text_ignores_webapp_button(monkeypatch, tmp_pat
 
     assert ok is False
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_repeats_until_button_disappears(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+
+    route_key = signer.get_route_key(123, None)
+    click_count = 0
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", callback_data="sign")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][message.id] = message
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        nonlocal click_count
+        del args, kwargs
+        click_count += 1
+        if click_count >= 3:
+            signer.context.chat_messages[route_key][message.id] = SimpleNamespace(
+                chat=SimpleNamespace(id=123),
+                id=456,
+                message_thread_id=None,
+                reply_markup=None,
+            )
+        return True
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(
+            text="🎯 签到",
+            repeat_until_complete=True,
+            repeat_interval=0,
+            repeat_timeout=0.2,
+        ),
+        message,
+    )
+
+    assert ok is True
+    assert click_count == 3
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_stops_on_already_done_popup(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 留下记录", callback_data="sign")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][message.id] = message
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        del args, kwargs
+        return BotCallbackAnswer(
+            cache_time=0,
+            alert=True,
+            message="您今天已经签过到了！签到是无聊的活动哦。",
+        )
+
+    signer.request_callback_answer = fake_request_callback_answer
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(
+            text="🎯",
+            repeat_until_complete=True,
+            repeat_interval=0,
+            repeat_timeout=0.2,
+        ),
+        message,
+    )
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_stops_on_success_message(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+
+    route_key = signer.get_route_key(123, None)
+    click_count = 0
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=None,
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 留下记录", callback_data="sign")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][message.id] = message
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        nonlocal click_count
+        del args, kwargs
+        click_count += 1
+        signer.context.chat_messages[route_key][789] = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            id=789,
+            message_thread_id=None,
+            text="🎉 签​到​成​功 | 3 问币\n💴 当前持有 | 250 问币\n⏳ 签到日期 | 2026-03-31",
+            caption=None,
+            reply_markup=None,
+        )
+        return BotCallbackAnswer(cache_time=0, alert=False, message=None)
+
+    signer.request_callback_answer = fake_request_callback_answer
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(
+            text="🎯",
+            repeat_until_complete=True,
+            repeat_interval=0.2,
+            repeat_timeout=0.5,
+        ),
+        message,
+    )
+
+    assert ok is True
+    assert click_count == 1
 
 
 @pytest.mark.asyncio

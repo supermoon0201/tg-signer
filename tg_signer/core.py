@@ -799,6 +799,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     _tasks_dir = "signs"
     cfg_cls = SignConfigV3
     context: UserSignerWorkerContext
+    _DEFAULT_REPEAT_SUCCESS_KEYWORDS = ("签到成功", "签到日期", "当前持有")
+    _DEFAULT_REPEAT_DONE_KEYWORDS = (
+        "已经签过到了",
+        "今天已经签过到了",
+        "已经签到",
+        "今日已签到",
+        "今朝已至",
+        "签到是无聊的活动哦",
+    )
 
     def ensure_ctx(self) -> UserSignerWorkerContext:
         return UserSignerWorkerContext(
@@ -1285,20 +1294,172 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def _click_keyboard_by_text(
         self, action: ClickKeyboardByTextAction, message: Message
     ):
-        if reply_markup := message.reply_markup:
-            if isinstance(reply_markup, InlineKeyboardMarkup):
-                for btn in (
-                    b for row in reply_markup.inline_keyboard for b in row if b.text
-                ):
-                    if action.text in btn.text and btn.callback_data:
-                        self.log(f"点击按钮: {btn.text}")
-                        await self.request_callback_answer(
-                            self.app,
-                            message.chat.id,
-                            message.id,
-                            btn.callback_data,
-                        )
-                        return True
+        found = self._find_callback_button(message, action.text)
+        if not found:
+            return False
+
+        if not action.repeat_until_complete:
+            btn = found[1]
+            self.log(f"点击按钮: {btn.text}")
+            answer = await self.request_callback_answer(
+                self.app,
+                message.chat.id,
+                message.id,
+                btn.callback_data,
+            )
+            return answer is not None
+
+        route_key = self.get_route_key(
+            message.chat.id,
+            getattr(message, "message_thread_id", None),
+        )
+        clicked = False
+        start = time.perf_counter()
+
+        while time.perf_counter() - start < action.repeat_timeout:
+            latest_found = self._find_latest_callback_button(route_key, action.text)
+            if latest_found is None:
+                if clicked:
+                    self.log(f"按钮「{action.text}」已消失，结束连续点击")
+                return clicked
+
+            target_message, btn = latest_found
+            self.log(f"连续点击按钮: {btn.text}")
+            answer = await self.request_callback_answer(
+                self.app,
+                target_message.chat.id,
+                target_message.id,
+                btn.callback_data,
+            )
+            if answer and self._callback_answer_matches_terminal_state(action, answer):
+                return True
+            if answer is None:
+                return clicked
+
+            clicked = True
+            terminal = await self._wait_for_click_completion_state(
+                route_key, action, action.repeat_interval
+            )
+            if terminal is not None:
+                return terminal
+
+        self.log(
+            f"按钮「{action.text}」连续点击达到超时上限 {action.repeat_timeout} 秒",
+            level="WARNING",
+        )
+        return clicked
+
+    async def _wait_for_click_completion_state(
+        self, route_key: RouteKey, action: ClickKeyboardByTextAction, timeout: float
+    ) -> Optional[bool]:
+        start = time.perf_counter()
+        while time.perf_counter() - start < timeout:
+            state = self._get_click_completion_state(route_key, action)
+            if state is not None:
+                return state
+            await asyncio.sleep(0.2)
+        return None
+
+    def _get_click_completion_state(
+        self, route_key: RouteKey, action: ClickKeyboardByTextAction
+    ) -> Optional[bool]:
+        messages_dict = self.context.chat_messages.get(route_key, {})
+        for message in reversed(list(messages_dict.values())):
+            if not message:
+                continue
+            text = self._normalize_match_text(self._message_match_text(message))
+            if self._matches_done_text(action, text):
+                self.log(f"检测到已签到提示，结束连续点击: {text}")
+                return True
+            if self._matches_success_text(action, text):
+                self.log(f"检测到签到成功提示，结束连续点击: {text}")
+                return True
+
+        latest_found = self._find_latest_callback_button(route_key, action.text)
+        if latest_found is None:
+            return True
+        return None
+
+    def _find_callback_button(
+        self, message: Optional[Message], text: str
+    ) -> Optional[tuple[Message, InlineKeyboardButton]]:
+        if not message:
+            return None
+        reply_markup = getattr(message, "reply_markup", None)
+        if not isinstance(reply_markup, InlineKeyboardMarkup):
+            return None
+        for btn in (b for row in reply_markup.inline_keyboard for b in row if b.text):
+            if text in btn.text and btn.callback_data:
+                return message, btn
+        return None
+
+    def _find_latest_callback_button(
+        self, route_key: RouteKey, text: str
+    ) -> Optional[tuple[Message, InlineKeyboardButton]]:
+        messages_dict = self.context.chat_messages.get(route_key, {})
+        for message in reversed(list(messages_dict.values())):
+            found = self._find_callback_button(message, text)
+            if found:
+                return found
+        return None
+
+    def _message_match_text(self, message: Message) -> str:
+        parts = []
+        for attr in ("text", "caption"):
+            value = getattr(message, attr, None)
+            if value:
+                parts.append(str(value))
+
+        reply_markup = getattr(message, "reply_markup", None)
+        if isinstance(reply_markup, InlineKeyboardMarkup):
+            for btn in (b for row in reply_markup.inline_keyboard for b in row if b.text):
+                parts.append(btn.text)
+
+        return "\n".join(parts)
+
+    def _normalize_match_text(self, text: Optional[str]) -> str:
+        if not text:
+            return ""
+        for ch in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", " "):
+            text = text.replace(ch, "")
+        return "".join(text.split()).lower()
+
+    def _matches_success_text(
+        self, action: ClickKeyboardByTextAction, normalized_text: str
+    ) -> bool:
+        keywords = [action.success_text] if action.success_text else []
+        if not keywords:
+            keywords = list(self._DEFAULT_REPEAT_SUCCESS_KEYWORDS)
+        return any(
+            self._normalize_match_text(keyword) in normalized_text
+            for keyword in keywords
+            if keyword
+        )
+
+    def _matches_done_text(
+        self, action: ClickKeyboardByTextAction, normalized_text: str
+    ) -> bool:
+        keywords = [action.already_done_text] if action.already_done_text else []
+        if not keywords:
+            keywords = list(self._DEFAULT_REPEAT_DONE_KEYWORDS)
+        return any(
+            self._normalize_match_text(keyword) in normalized_text
+            for keyword in keywords
+            if keyword
+        )
+
+    def _callback_answer_matches_terminal_state(
+        self, action: ClickKeyboardByTextAction, answer
+    ) -> bool:
+        normalized_text = self._normalize_match_text(getattr(answer, "message", None))
+        if not normalized_text:
+            return False
+        if self._matches_done_text(action, normalized_text):
+            self.log(f"检测到已签到弹窗，结束连续点击: {getattr(answer, 'message', '')}")
+            return True
+        if self._matches_success_text(action, normalized_text):
+            self.log(f"检测到签到成功弹窗，结束连续点击: {getattr(answer, 'message', '')}")
+            return True
         return False
 
     async def _get_webview_url_from_button(
@@ -2468,7 +2629,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         **kwargs,
     ):
         try:
-            await self._call_telegram_api(
+            answer = await self._call_telegram_api(
                 "messages.GetBotCallbackAnswer",
                 lambda: client.request_callback_answer(
                     chat_id,
@@ -2477,9 +2638,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     **kwargs,
                 ),
             )
-            self.log("点击完成")
+            msg = getattr(answer, "message", None)
+            if msg:
+                self.log(f"点击完成，弹窗消息: {msg}")
+            else:
+                self.log("点击完成")
+            return answer
         except (errors.BadRequest, TimeoutError) as e:
-            self.log(e, level="ERROR")
+            err_text = str(e)
+            if "MESSAGE_ID_INVALID" in err_text:
+                self.log("按钮对应消息已失效，停止继续点击")
+            else:
+                self.log(e, level="ERROR")
+            return None
 
     async def schedule_messages(
         self,

@@ -207,6 +207,11 @@ class ClickKeyboardByTextAction(SignAction):
         SupportAction.CLICK_KEYBOARD_BY_TEXT
     )
     text: str
+    repeat_until_complete: bool = False  # 持续点击直到按钮消失/消息变化/超时
+    repeat_interval: float = 0.8  # 连续点击间隔，单位秒
+    repeat_timeout: float = 8.0  # 连续点击总时长上限，单位秒
+    success_text: Optional[str] = None  # 成功提示文本，留空则使用内置关键词
+    already_done_text: Optional[str] = None  # 已签到提示文本，留空则使用内置关键词
 
 
 class ChooseOptionByImageAction(SignAction):
