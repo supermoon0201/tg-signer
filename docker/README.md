@@ -50,6 +50,33 @@ sleep infinity
 docker-compose up -d
 ```
 
+仓库根目录默认的 `docker compose up -d` 会构建一个轻量 CLI 镜像，用于签到、监控、消息处理和 AI 识图，不包含 WebUI 依赖。
+
+如果需要 `webgui`，请走单独的 `gui` 依赖安装路径，不要把默认 compose 产物当成 WebUI 镜像使用。
+
+默认 CLI 镜像已经包含：
+
+- `opencv-python-headless`
+- `playwright`
+- Chromium 浏览器运行时
+
+因此如果你在容器中使用：
+
+- `根据文本打开小程序并点击页面按钮`
+- WebApp 图片验证码识别
+- Cloudflare Turnstile + 2Captcha
+
+通常不需要再手动执行 `playwright install chromium`。
+
+如果需要在容器中直接使用 2Captcha，记得传入环境变量：
+
+```sh
+docker run -d --name tg-signer \
+  --volume $PWD:/opt/tg-signer \
+  --env TWOCAPTCHA_API_KEY=your_key_here \
+  tg-signer:latest bash start.sh
+```
+
 ### 可选：调整时区
 
 通过 `TZ` 环境变量可以在启动和构建期间一致地设置时区（默认 `Asia/Shanghai`）。示例：

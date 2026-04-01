@@ -26,9 +26,21 @@ Or for performance optimization:
 pip install "tg-signer[speedup]"
 ```
 
+#### WebUI
+
+`tg-signer` also ships with a WebUI. Install it explicitly with:
+
+```sh
+pip install "tg-signer[gui]"
+```
+
+The default `docker compose up -d` lightweight image does not include these dependencies. If you need `webgui`, install the `gui` extras separately instead of relying on the default Docker path.
+
 #### Docker
 
 No pre-built image is provided. You can build your own image using the Dockerfile and [README](./docker/README.md) in the [docker](./docker) directory.
+
+The root-level `docker compose up -d` builds a lightweight CLI image for check-ins, monitoring, messaging, and AI image recognition. WebUI dependencies are intentionally excluded from that default image.
 
 ### Usage
 
@@ -182,6 +194,80 @@ Continue configuration? (y/N): n
 Daily check-in time (time or crontab, e.g. '06:00:00' or '0 6 * * *'):
 Random time deviation in seconds (default: 0): 300
 ```
+
+### Telegram WebApp Check-in
+
+Use this action flow for bots that require opening a Telegram WebApp and clicking a button inside the page:
+
+1. Send `/start`
+2. Click a Telegram message button such as `🎯 Check-in`
+3. Click a button inside the WebApp such as `Verify and Check In`
+
+Use the `OpenWebAppByTextAction` fields:
+
+- `text`: button text in the Telegram message
+- `page_button_text`: button text inside the WebApp
+- `ready_text`: optional text that must appear before clicking
+- `success_text`: optional success text after clicking
+
+This action also supports:
+
+- image captchas solved by 2Captcha OCR
+- Cloudflare Turnstile
+
+#### Cloudflare Turnstile / 2Captcha
+
+For WebApps that show Cloudflare Turnstile, configure:
+
+- `turnstile_enabled`
+- `turnstile_auto_click`
+- `turnstile_use_2captcha`
+- `turnstile_timeout`
+- `turnstile_retry_after_solve`
+
+Recommended settings:
+
+- keep `turnstile_auto_click: true` if the widget can be passed by direct browser interaction
+- use `turnstile_auto_click: false` and `turnstile_use_2captcha: true` for sites that require a Turnstile token from 2Captcha
+
+The 2Captcha API key can be provided via:
+
+- `two_captcha_api_key` in the action config
+- `TWOCAPTCHA_API_KEY` or `TWO_CAPTCHA_API_KEY` environment variables
+
+Example:
+
+```json
+{
+  "action": 8,
+  "text": "🎯 Check-in",
+  "page_button_text": "Verify and Check In",
+  "success_text": "Success!",
+  "turnstile_enabled": true,
+  "turnstile_auto_click": false,
+  "turnstile_use_2captcha": true,
+  "turnstile_timeout": 90,
+  "headless": true
+}
+```
+
+For classic image captchas, use:
+
+- `captcha_image_selector`
+- `captcha_input_selector`
+- `captcha_submit_selector`
+- `captcha_success_text`
+- `captcha_timeout`
+- `captcha_poll_interval`
+
+Install browser automation dependencies before first use:
+
+```sh
+pip install playwright
+playwright install chromium
+```
+
+If you run inside Docker, the default CLI image already includes `playwright` and Chromium.
 
 ### Configure and Run Monitoring
 

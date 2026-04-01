@@ -31,12 +31,16 @@ tg-signer附带了一个WebUI，安装命令:
 pip install "tg-signer[gui]"
 ```
 
+默认的 `docker compose up -d` 轻量镜像不包含这部分依赖；如需使用 `webgui`，请单独安装 `gui` 相关依赖，而不是依赖默认 Docker 路径。
+
 ![webgui](./assets/webui.jpeg)
 
 
 ### Docker
 
 未上传直接使用的镜像，可以自行build镜像，见 [docker](./docker) 目录下的Dockerfile和 [README](./docker/README.md) 。
+
+仓库根目录的 `docker compose up -d` 默认构建的是轻量 CLI 镜像，用于签到、监控、消息处理和 AI 识图等任务，不包含 WebUI 依赖。
 
 ### 使用方法
 
@@ -158,6 +162,7 @@ tg-signer run linuxdo
   3: 根据文本点击键盘
   4: 根据图片选择选项
   5: 回复计算题
+  8: 根据文本打开小程序并点击页面按钮
 
 第1个动作:
 1. 输入对应的数字选择动作: 1
@@ -199,6 +204,91 @@ tg-signer run linuxdo
 每日签到时间（time或crontab表达式，如'06:00:00'或'0 6 * * *'）:
 签到时间误差随机秒数（默认为0）: 300
 ```
+
+### 小程序签到
+
+针对这类流程：
+
+1. 向 Bot 发送 `/start`
+2. 点击聊天消息中的小程序按钮，例如 `🎯 签到`
+3. 在打开的小程序页面中点击 `验证并签到`
+
+可以将动作配置为：
+
+1. `发送普通文本`：`/start`
+2. `根据文本打开小程序并点击页面按钮`
+   - Telegram消息中要点击的小程序按钮文本：`🎯 签到`
+   - 小程序页面中要点击的按钮文本：`验证并签到`
+   - 点击前需要等待出现的文本：如果页面里有人机验证成功提示，例如 `成功!`，填在这里
+   - 点击后期望出现的成功文本：按实际页面填写，可留空
+
+该动作支持三类场景：
+
+1. 普通 WebApp 按钮点击
+2. WebApp 内图片验证码，使用 2Captcha OCR 识别后回填
+3. Cloudflare Turnstile，人机验证通过后再继续点击业务按钮
+
+#### Cloudflare Turnstile / 2Captcha
+
+部分站点会在 WebApp 中弹出 Cloudflare Turnstile，例如：
+
+- 点击 `验证并签到`
+- 页面出现 `Verify you are human`
+- 需要先完成验证才能继续签到
+
+这类场景可以在 `OpenWebAppByTextAction` 中启用以下字段：
+
+- `turnstile_enabled`
+- `turnstile_auto_click`
+- `turnstile_use_2captcha`
+- `turnstile_timeout`
+- `turnstile_retry_after_solve`
+
+推荐做法：
+
+- 对能直接自动点击通过的站点，保留 `turnstile_auto_click: true`
+- 对 Lily 这类自动点击无效、但 2Captcha token 能通过的站点，建议设为：
+  - `turnstile_auto_click: false`
+  - `turnstile_use_2captcha: true`
+
+2Captcha 的 API Key 可通过两种方式提供：
+
+- 动作字段 `two_captcha_api_key`
+- 环境变量 `TWOCAPTCHA_API_KEY` 或 `TWO_CAPTCHA_API_KEY`
+
+示例配置：
+
+```json
+{
+  "action": 8,
+  "text": "🎯 签到",
+  "page_button_text": "验证并签到",
+  "success_text": "成功!",
+  "turnstile_enabled": true,
+  "turnstile_auto_click": false,
+  "turnstile_use_2captcha": true,
+  "turnstile_timeout": 90,
+  "headless": true
+}
+```
+
+如果是普通图片验证码，可继续使用：
+
+- `captcha_image_selector`
+- `captcha_input_selector`
+- `captcha_submit_selector`
+- `captcha_success_text`
+- `captcha_timeout`
+- `captcha_poll_interval`
+
+该动作会按需使用浏览器自动化打开 Telegram WebApp。首次使用前请确保安装：
+
+```sh
+pip install playwright
+playwright install chromium
+```
+
+如果你在 Docker 中运行，默认的 CLI 镜像已经包含 `playwright` 和 Chromium，无需在容器内额外安装浏览器。
 
 ### 配置与运行监控
 

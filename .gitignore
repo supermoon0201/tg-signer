@@ -128,3 +128,6 @@ _test*.json
 .history
 nul
 AGENTS.md
+.ace-tool/
+docs/
+.claude/
