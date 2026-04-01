@@ -78,9 +78,12 @@ Commands:
   import                  导入配置，默认为从终端读取。
   list                    列出已有配置
   list-members            查询聊天（群或频道）的成员, 频道需要管理员权限
+  list-sign-records       列出最近N条签到记录
+  list-topics             列出群组话题ID（message_thread_id）
   list-schedule-messages  显示已配置的定时消息
   llm-config              配置大模型API
   login                   登录账号（用于获取session）
+  migrate-sign-records    将签到记录从 JSON 迁移到 SQLite（默认保留原...
   logout                  登出账号并删除session文件
   monitor                 配置和运行监控
   multi-run               使用一套配置同时运行多个账号
@@ -101,11 +104,16 @@ Commands:
 tg-signer run
 tg-signer run my_sign  # 不询问，直接运行'my_sign'任务
 tg-signer run-once my_sign  # 直接运行一次'my_sign'任务
+tg-signer list-sign-records linuxdo -n 5  # 查看任务 linuxdo 最近 5 条签到记录
+tg-signer migrate-sign-records  # 将.signer/signs 下的签到记录迁移到 SQLite
 tg-signer send-text 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本
+tg-signer send-text --message-thread-id 1 -- -1003763902761 checkin  # 发送到群组话题(message_thread_id=1)
 tg-signer send-text -- -10006758812 浇水  # 对于负数需要使用POSIX风格，在短横线'-'前方加上'--'
 tg-signer send-text --delete-after 1 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本, 并在1秒后删除发送的消息
 tg-signer list-members --chat_id -1001680975844 --admin  # 列出频道的管理员
+tg-signer list-topics --chat_id -1003763902761 --limit 50  # 列出群组话题及message_thread_id
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 10 -- -1001680975844 你好  # 在未来10天的每天0点向'-1001680975844'发送消息
+tg-signer schedule-messages --crontab '0 0 * * *' --next-times 3 --message-thread-id 1 -- -1003763902761 你好  # 配置群组话题的定时消息
 tg-signer monitor run  # 配置个人、群组、频道消息监控与自动回复
 tg-signer multi-run -a account_a -a account_b same_task  # 使用'same_task'的配置同时运行'account_a'和'account_b'两个账号
 tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
@@ -128,6 +136,15 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
+对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
+
+### 获取群组话题 ID
+
+```sh
+tg-signer list-topics --chat_id -1003763902761
+```
+
+会输出该论坛群组可见话题的 `message_thread_id`、标题及状态，便于配置签到到指定话题。
 
 ### 发送一次消息
 
@@ -156,7 +173,9 @@ tg-signer run linuxdo
 第1个签到
 一. Chat ID（登录时最近对话输出中的ID）: 7661096533
 二. Chat名称（可选）: jerry bot
-三. 开始配置<动作>，请按照实际签到顺序配置。
+三. 是否发送到话题（message_thread_id）？(y/N)：y
+四. message_thread_id: 1
+五. 开始配置<动作>，请按照实际签到顺序配置。
   1: 发送普通文本
   2: 发送Dice类型的emoji
   3: 根据文本点击键盘
@@ -185,10 +204,11 @@ tg-signer run linuxdo
 2. 输入要发送的骰子（如 🎲, 🎯）: 🎲
 3. 是否继续添加动作？(y/N)：n
 在运行前请通过环境变量正确设置`OPENAI_API_KEY`, `OPENAI_BASE_URL`。默认模型为"gpt-4o", 可通过环境变量`OPENAI_MODEL`更改。
-四. 等待N秒后删除签到消息（发送消息后等待进行删除, '0'表示立即删除, 不需要删除直接回车）, N: 10
+六. 等待N秒后删除签到消息（发送消息后等待进行删除, '0'表示立即删除, 不需要删除直接回车）, N: 10
 ╔════════════════════════════════════════════════╗
 ║ Chat ID: 7661096533                            ║
 ║ Name: jerry bot                                ║
+║ Message Thread ID: 1                           ║
 ║ Delete After: 10                               ║
 ╟────────────────────────────────────────────────╢
 ║ Actions Flow:                                  ║
@@ -468,6 +488,10 @@ tg-signer monitor run my_monitor
 
 ### 版本变动日志
 
+#### 0.8.5
+- "kurigram>=2.2.19,<2.3.0"
+- 单账户多任务时进行并发请求限流
+
 #### 0.8.4
 - 新增 WebGUI
 - 新增`--log-dir`选项，更改日志默认目录为`logs`，warning和error分为单独文件
@@ -551,15 +575,25 @@ tg-signer monitor run my_monitor
 
 ```
 .signer
-├── latest_chats.json  # 获取的最近对话
-├── me.json  # 个人信息
+├── .openai_config.json  # 可选，大模型配置
+├── data.sqlite3  # SQLite 签到记录库
 ├── monitors  # 监控
 │   ├── my_monitor  # 监控任务名
 │       └── config.json  # 监控配置
+├── users
+│   └── 123456789
+│       ├── latest_chats.json  # 获取的最近对话
+│       └── me.json  # 个人信息
 └── signs  # 签到任务
     └── linuxdo  # 签到任务名
         ├── config.json  # 签到配置
-        └── sign_record.json  # 签到记录
+        ├── 123456789
+        │   └── sign_record.json  # 旧版 JSON 签到记录（兼容迁移）
+        └── sign_record.json  # 更旧版 JSON 路径（兼容迁移）
 
-3 directories, 4 files
+5 directories, 6 files
 ```
+
+迁移到 SQLite 后，新的签到记录只写入 `data.sqlite3`，但仍兼容读取旧
+`sign_record.json`。当运行任务时如果检测到旧 JSON，程序会输出提示并尝试将该任务
+的历史记录自动导入 SQLite。

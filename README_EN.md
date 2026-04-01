@@ -76,7 +76,10 @@ Commands:
   import                  Import config (default: stdin)
   list                    List existing configs
   list-members            List chat members (admin rights required for channels)
+  list-sign-records       List the most recent N check-in records
+  list-topics             List group topic IDs (message_thread_id)
   list-schedule-messages  Show configured scheduled messages
+  migrate-sign-records    Migrate check-in records from JSON to SQLite
   login                   Login account (to obtain session)
   logout                  Logout and delete session file
   monitor                 Configure and run monitoring
@@ -95,11 +98,16 @@ Examples:
 tg-signer run
 tg-signer run my_sign  # Run 'my_sign' task without confirmation
 tg-signer run-once my_sign  # Run 'my_sign' task once
+tg-signer list-sign-records linuxdo -n 5  # Show the latest 5 records for task linuxdo
+tg-signer migrate-sign-records  # Migrate check-in records under .signer/signs to SQLite
 tg-signer send-text 8671234001 /test  # Send '/test' to chat_id '8671234001'
+tg-signer send-text --message-thread-id 1 -- -1003763902761 checkin  # Send to a group topic (message_thread_id=1)
 tg-signer send-text -- -10006758812 water  # For negative numbers, use POSIX style with '--' before '-'
 tg-signer send-text --delete-after 1 8671234001 /test  # Send '/test' to '8671234001', delete after 1 second
 tg-signer list-members --chat_id -1001680975844 --admin  # List channel admins
+tg-signer list-topics --chat_id -1003763902761 --limit 50  # List group topics and message_thread_id
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 10 -- -1001680975844 hello  # Send "hello" to '-1001680975844' at 00:00 daily for next 10 days
+tg-signer schedule-messages --crontab '0 0 * * *' --next-times 3 --message-thread-id 1 -- -1003763902761 hello  # Schedule messages in a topic
 tg-signer monitor run  # Configure and run personal/group/channel message monitoring
 tg-signer multi-run -a account_a -a account_b same_task  # Run 'account_a' and 'account_b' with 'same_task' config
 ```
@@ -119,6 +127,15 @@ tg-signer login
 ```
 
 Follow prompts to enter phone number and verification code. Recent chats will be listed - ensure your target chat is included.
+For supergroups with topics enabled, login output also prints each topic's `message_thread_id`, so you can directly use it with `--message-thread-id`.
+
+### Get Group Topic IDs
+
+```sh
+tg-signer list-topics --chat_id -1003763902761
+```
+
+This prints visible topics with `message_thread_id`, title, and status, making topic-specific configuration easier.
 
 ### Send One Message
 
@@ -147,7 +164,9 @@ Configuring task <linuxdo>
 Check-in 1
 1. Chat ID (from recent chats during login): 7661096533
 2. Chat name (optional): jerry bot
-3. Configure <Actions> in actual check-in order:
+3. Send to topic (message_thread_id)? (y/N): y
+4. message_thread_id: 1
+5. Configure <Actions> in actual check-in order:
   1: Send plain text
   2: Send Dice emoji
   3: Click keyboard by text
@@ -175,10 +194,11 @@ Action 5:
 12. Dice emoji to send (e.g. 🎲, 🎯): 🎲
 13. Continue adding actions? (y/N): n
 Ensure `OPENAI_API_KEY` and `OPENAI_BASE_URL` are set. Default model: "gpt-4o" (change via `OPENAI_MODEL`).
-14. Delete check-in message after N seconds (0=immediate, empty=no delete), N: 10
+15. Delete check-in message after N seconds (0=immediate, empty=no delete), N: 10
 ╔════════════════════════════════════════════════╗
 ║ Chat ID: 7661096533                            ║
 ║ Name: jerry bot                                ║
+║ Message Thread ID: 1                           ║
 ║ Delete After: 10                               ║
 ╟────────────────────────────────────────────────╢
 ║ Actions Flow:                                  ║
@@ -423,15 +443,26 @@ Configs and data are stored in `.signer` by default. Running `tree .signer` show
 
 ```
 .signer
-├── latest_chats.json  # Recent chats
-├── me.json  # Personal info
+├── .openai_config.json  # Optional AI config
+├── data.sqlite3  # SQLite check-in record database
 ├── monitors  # Monitoring
 │   ├── my_monitor  # Task name
 │       └── config.json  # Config
+├── users
+│   └── 123456789
+│       ├── latest_chats.json  # Recent chats
+│       └── me.json  # Personal info
 └── signs  # Check-ins
     └── linuxdo  # Task name
         ├── config.json  # Config
-        └── sign_record.json  # Records
+        ├── 123456789
+        │   └── sign_record.json  # Legacy JSON records (migration compatible)
+        └── sign_record.json  # Older legacy JSON path (migration compatible)
 
-3 directories, 4 files
+5 directories, 6 files
 ```
+
+After migration, new check-in records are written only to `data.sqlite3`, while
+legacy `sign_record.json` remains readable. When a task runs and legacy JSON is
+detected, tg-signer will print a hint and try to import that task's history
+into SQLite automatically.
