@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -6,11 +7,11 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
-from datetime import timedelta, timezone
 from typing import (
     Annotated,
+    Any,
     Awaitable,
     BinaryIO,
     Callable,
@@ -51,6 +52,7 @@ from tg_signer.config import (
     HttpCallback,
     MatchConfig,
     MonitorConfig,
+    OpenWebAppByTextAction,
     ReplyByCalculationProblemAction,
     SendDiceAction,
     SendTextAction,
@@ -69,6 +71,62 @@ from .utils import UserInput, print_to_user
 logger = logging.getLogger("tg-signer")
 
 DICE_EMOJIS = ("🎲", "🎯", "🏀", "⚽", "🎳", "🎰")
+TURNSTILE_HOOK_SCRIPT = """
+(() => {
+  if (window.__tgSignerTurnstileHookInstalled) {
+    return;
+  }
+  window.__tgSignerTurnstileHookInstalled = true;
+  window.__tgSignerTurnstile = {
+    renders: [],
+    lastToken: null,
+    callback: null,
+  };
+
+  const wrapCallback = (cb) => {
+    if (typeof cb !== "function") {
+      return cb;
+    }
+    return function(token) {
+      window.__tgSignerTurnstile.lastToken = token || null;
+      window.__tgSignerTurnstile.callback = cb;
+      return cb(token);
+    };
+  };
+
+  const install = () => {
+    if (!window.turnstile || window.turnstile.__tgSignerWrapped) {
+      return;
+    }
+
+    const originalRender = window.turnstile.render.bind(window.turnstile);
+    window.turnstile.render = function(container, params) {
+      try {
+        const recorded = {
+          sitekey: params?.sitekey || null,
+          action: params?.action || null,
+          data: params?.cData || null,
+          pagedata: params?.chlPageData || null,
+        };
+        window.__tgSignerTurnstile.renders.push(recorded);
+        if (typeof params?.callback === "function") {
+          window.__tgSignerTurnstile.callback = params.callback;
+          params = { ...params, callback: wrapCallback(params.callback) };
+        }
+      } catch (e) {
+        console.debug("tg-signer turnstile hook failed", e);
+      }
+      return originalRender(container, params);
+    };
+
+    window.turnstile.__tgSignerWrapped = true;
+  };
+
+  install();
+  const timer = window.setInterval(install, 50);
+  window.setTimeout(() => window.clearInterval(timer), 10000);
+})();
+"""
 
 Session.START_TIMEOUT = 5  # 原始超时时间为2秒，但一些代理访问会超时，所以这里调大一点
 
@@ -731,6 +789,81 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         "此动作用于处理：Bot先发送带按钮的消息，再发送GIF验证码的场景。"
                     )
                     actions.append(ChooseOptionByGifAction())
+                elif action == SupportAction.OPEN_WEBAPP_BY_TEXT:
+                    text_of_btn_to_click = local_input_(
+                        "Telegram消息中要点击的小程序按钮文本: "
+                    )
+                    page_button_text = local_input_(
+                        "小程序页面中要点击的按钮文本: "
+                    )
+                    ready_text = local_input_(
+                        "点击前需要等待出现的文本（如 验证成功，可选，直接回车跳过）: "
+                    ).strip()
+                    response_url_contains = local_input_(
+                        "点击后需要监听的接口URL片段（如 /auth/checkin/submit，可选）: "
+                    ).strip()
+                    success_text = local_input_(
+                        "点击后期望出现的成功文本（可选，直接回车跳过）: "
+                    ).strip()
+                    turnstile_enabled = (
+                        local_input_(
+                            "是否处理 Cloudflare Turnstile 验证？(y/N): "
+                        ).strip().lower()
+                        == "y"
+                    )
+                    turnstile_use_2captcha = False
+                    if turnstile_enabled:
+                        turnstile_use_2captcha = (
+                            local_input_(
+                                "Turnstile 自动点击失败后是否使用 2captcha？(y/N): "
+                            ).strip().lower()
+                            == "y"
+                        )
+                    captcha_image_selector = local_input_(
+                        "验证码图片选择器（可选，留空则不启用TwoCaptcha）: "
+                    ).strip()
+                    captcha_input_selector = None
+                    captcha_submit_selector = None
+                    captcha_success_text = None
+                    two_captcha_api_key = None
+                    if captcha_image_selector:
+                        captcha_input_selector = local_input_(
+                            "验证码输入框选择器: "
+                        ).strip()
+                        captcha_submit_selector = (
+                            local_input_(
+                                "验证码提交按钮选择器（可选，直接回车跳过）: "
+                            ).strip()
+                            or None
+                        )
+                        captcha_success_text = (
+                            local_input_(
+                                "验证码成功文本（可选，直接回车跳过）: "
+                            ).strip()
+                            or None
+                        )
+                        two_captcha_api_key = (
+                            local_input_(
+                                "2captcha API Key（可选，直接回车则改用环境变量TWOCAPTCHA_API_KEY）: "
+                            ).strip()
+                            or None
+                        )
+                    actions.append(
+                        OpenWebAppByTextAction(
+                            text=text_of_btn_to_click,
+                            page_button_text=page_button_text,
+                            ready_text=ready_text or None,
+                            response_url_contains=response_url_contains or None,
+                            success_text=success_text or None,
+                            turnstile_enabled=turnstile_enabled,
+                            turnstile_use_2captcha=turnstile_use_2captcha,
+                            captcha_image_selector=captcha_image_selector or None,
+                            captcha_input_selector=captcha_input_selector or None,
+                            captcha_submit_selector=captcha_submit_selector,
+                            captcha_success_text=captcha_success_text,
+                            two_captcha_api_key=two_captcha_api_key,
+                        )
+                    )
                 else:
                     raise ValueError(f"不支持的动作: {action}")
                 if local_input_("是否继续添加动作？(y/N)：").strip().lower() != "y":
@@ -838,12 +971,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         max_flow_retries: int = 3,
     ):
         self.log(f"开始执行: \n{chat}")
-        
+
         for flow_attempt in range(max_flow_retries):
             if flow_attempt > 0:
                 self.log(f"第 {flow_attempt + 1} 次从头重新执行签到流程...")
                 await asyncio.sleep(2)
-            
+
             need_retry = False
             for action in chat.actions:
                 self.log(f"等待处理动作: {action}")
@@ -855,10 +988,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.log(f"处理完成: {action}")
                 self.context.waiting_message = None
                 await asyncio.sleep(chat.action_interval)
-            
+
             if not need_retry:
                 return  # 成功完成
-        
+
         self.log(f"签到流程重试 {max_flow_retries} 次后仍失败", level="ERROR")
 
     async def run(
@@ -1007,11 +1140,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ):
         if reply_markup := message.reply_markup:
             if isinstance(reply_markup, InlineKeyboardMarkup):
-                flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
-                option_to_btn: dict[str, InlineKeyboardButton] = {}
-                for btn in flat_buttons:
-                    option_to_btn[btn.text] = btn
-                    if action.text in btn.text:
+                for btn in (
+                    b for row in reply_markup.inline_keyboard for b in row if b.text
+                ):
+                    if action.text in btn.text and btn.callback_data:
                         self.log(f"点击按钮: {btn.text}")
                         await self.request_callback_answer(
                             self.app,
@@ -1020,6 +1152,668 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             btn.callback_data,
                         )
                         return True
+        return False
+
+    async def _get_webview_url_from_button(
+        self, message: Message, button: InlineKeyboardButton
+    ) -> Optional[str]:
+        from pyrogram.raw.functions.messages import RequestWebView
+
+        raw_url = None
+        if button.web_app:
+            raw_url = button.web_app.url
+        elif button.url:
+            raw_url = button.url
+        elif button.login_url:
+            raw_url = button.login_url.url
+
+        if not raw_url:
+            return None
+
+        bot_id = None
+        if message.from_user and message.from_user.is_bot:
+            bot_id = message.from_user.id
+        elif getattr(message.chat, "id", None):
+            bot_id = message.chat.id
+
+        if bot_id is None:
+            self.log("无法识别 WebApp 对应的 Bot", level="WARNING")
+            return raw_url
+
+        try:
+            chat_peer = await self.app.resolve_peer(message.chat.id)
+            bot_peer = await self.app.resolve_peer(bot_id)
+            return (
+                await self.app.invoke(
+                    RequestWebView(
+                        peer=chat_peer,
+                        bot=bot_peer,
+                        platform="ios",
+                        url=raw_url,
+                    )
+                )
+            ).url
+        except Exception as e:
+            self.log(
+                f"获取 WebApp 认证链接失败，将回退到原始链接: {e}",
+                level="WARNING",
+            )
+            return raw_url
+
+    async def _run_webapp_page_action(
+        self, action: OpenWebAppByTextAction, webview_url: str
+    ) -> bool:
+        try:
+            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.log(
+                "缺少 playwright 依赖，无法执行小程序页面自动点击。"
+                "请安装 `playwright` 并执行 `playwright install chromium`。",
+                level="ERROR",
+            )
+            return False
+
+        try:
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=action.headless)
+                page = await browser.new_page()
+                try:
+                    if action.turnstile_enabled:
+                        await page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+
+                    response_future = None
+                    if action.response_url_contains:
+                        response_future = asyncio.get_running_loop().create_future()
+
+                        async def on_response(resp):
+                            if action.response_url_contains not in resp.url:
+                                return
+                            if response_future.done():
+                                return
+                            payload: dict[str, Any] | None = None
+                            text = None
+                            try:
+                                payload = await resp.json()
+                            except Exception:
+                                try:
+                                    text = await resp.text()
+                                except Exception:
+                                    text = None
+                            response_future.set_result(
+                                {
+                                    "status": resp.status,
+                                    "url": resp.url,
+                                    "json": payload,
+                                    "text": text,
+                                }
+                            )
+
+                        page.on("response", on_response)
+
+                    self.log("正在打开 WebApp 页面...")
+                    await page.goto(
+                        webview_url,
+                        wait_until="domcontentloaded",
+                        timeout=action.page_load_timeout * 1000,
+                    )
+
+                    if action.ready_text:
+                        self.log(f"等待 WebApp 就绪文本: {action.ready_text}")
+                        await page.get_by_text(
+                            action.ready_text, exact=False
+                        ).first.wait_for(
+                            state="visible",
+                            timeout=action.ready_timeout * 1000,
+                        )
+                        self.log(f"检测到 WebApp 就绪文本: {action.ready_text}")
+
+                    if not await self._maybe_solve_webapp_captcha(action, page):
+                        return False
+
+                    click_attempts = 2 if action.turnstile_retry_after_solve else 1
+                    for _click_attempt in range(click_attempts):
+                        button = page.get_by_role(
+                            "button", name=action.page_button_text, exact=False
+                        ).first
+                        try:
+                            await button.wait_for(
+                                state="visible", timeout=action.button_timeout * 1000
+                            )
+                        except PlaywrightTimeoutError:
+                            button = page.get_by_text(
+                                action.page_button_text, exact=False
+                            ).first
+                            await button.wait_for(
+                                state="visible", timeout=action.button_timeout * 1000
+                            )
+
+                        await button.click(timeout=action.button_timeout * 1000)
+                        self.log(
+                            f"已在 WebApp 中点击按钮: {action.page_button_text}"
+                        )
+
+                        turnstile_result = await self._handle_turnstile_after_button_click(
+                            action, page
+                        )
+                        if turnstile_result == "retry":
+                            self.log(
+                                "Cloudflare Turnstile 已处理，准备重新点击业务按钮。"
+                            )
+                            continue
+                        if turnstile_result == "blocked":
+                            return False
+                        break
+
+                    if response_future is not None:
+                        self.log(
+                            f"等待 WebApp 接口响应: {action.response_url_contains}"
+                        )
+                        response_result = await asyncio.wait_for(
+                            response_future,
+                            timeout=action.response_timeout,
+                        )
+                        self.log(
+                            f"检测到 WebApp 接口响应: {response_result['status']} "
+                            f"{response_result['url']}"
+                        )
+                        payload = response_result.get("json")
+                        if isinstance(payload, dict):
+                            success_value = payload.get(action.response_success_key)
+                            if success_value != action.response_success_value:
+                                message = None
+                                if action.response_message_key:
+                                    message = payload.get(action.response_message_key)
+                                self.log(
+                                    "WebApp 接口返回失败: "
+                                    f"{message or payload}",
+                                    level="WARNING",
+                                )
+                                return False
+                            self.log(
+                                f"WebApp 接口返回成功: {payload.get(action.response_success_key)}"
+                            )
+                            return True
+                        self.log(
+                            "WebApp 接口响应不是JSON，无法判定成功: "
+                            f"{response_result.get('text') or response_result}",
+                            level="WARNING",
+                        )
+                        return False
+
+                    if action.success_text:
+                        await page.get_by_text(
+                            action.success_text, exact=False
+                        ).first.wait_for(
+                            state="visible",
+                            timeout=action.success_timeout * 1000,
+                        )
+                        self.log(
+                            f"检测到 WebApp 成功提示文本: {action.success_text}"
+                        )
+                    return True
+                finally:
+                    await browser.close()
+        except Exception as e:
+            self.log(f"WebApp 页面操作失败: {e}", level="ERROR")
+            return False
+
+    def _get_twocaptcha_api_key(self, action: OpenWebAppByTextAction) -> Optional[str]:
+        return (
+            action.two_captcha_api_key
+            or os.environ.get("TWOCAPTCHA_API_KEY")
+            or os.environ.get("TWO_CAPTCHA_API_KEY")
+        )
+
+    async def _solve_twocaptcha_image(
+        self,
+        api_key: str,
+        image_bytes: bytes,
+        timeout_seconds: int,
+        poll_interval_seconds: int,
+    ) -> str:
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            submit_resp = await client.post(
+                "https://2captcha.com/in.php",
+                data={
+                    "key": api_key,
+                    "method": "base64",
+                    "body": encoded_image,
+                    "json": 1,
+                },
+            )
+            submit_resp.raise_for_status()
+            submit_payload = submit_resp.json()
+            if submit_payload.get("status") != 1:
+                raise ValueError(
+                    f"2captcha 提交失败: {submit_payload.get('request') or submit_payload}"
+                )
+
+            captcha_id = str(submit_payload["request"])
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                await asyncio.sleep(max(poll_interval_seconds, 1))
+                result_resp = await client.get(
+                    "https://2captcha.com/res.php",
+                    params={
+                        "key": api_key,
+                        "action": "get",
+                        "id": captcha_id,
+                        "json": 1,
+                    },
+                )
+                result_resp.raise_for_status()
+                result_payload = result_resp.json()
+                if result_payload.get("status") == 1:
+                    result = str(result_payload["request"]).strip()
+                    if not result:
+                        raise ValueError("2captcha 返回了空验证码结果")
+                    return result
+
+                if result_payload.get("request") == "CAPCHA_NOT_READY":
+                    continue
+
+                raise ValueError(
+                    f"2captcha 识别失败: {result_payload.get('request') or result_payload}"
+                )
+
+        raise TimeoutError(
+            f"2captcha 在 {timeout_seconds} 秒内未返回识别结果"
+        )
+
+    async def _solve_twocaptcha_turnstile(
+        self,
+        api_key: str,
+        website_url: str,
+        website_key: str,
+        action: Optional[str],
+        c_data: Optional[str],
+        chl_page_data: Optional[str],
+        timeout_seconds: int,
+        poll_interval_seconds: int,
+    ) -> dict[str, Any]:
+        task: dict[str, Any] = {
+            "type": "TurnstileTaskProxyless",
+            "websiteURL": website_url,
+            "websiteKey": website_key,
+        }
+        if action:
+            task["action"] = action
+        if c_data:
+            task["data"] = c_data
+        if chl_page_data:
+            task["pagedata"] = chl_page_data
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            create_resp = await client.post(
+                "https://api.2captcha.com/createTask",
+                json={
+                    "clientKey": api_key,
+                    "task": task,
+                },
+            )
+            create_resp.raise_for_status()
+            create_payload = create_resp.json()
+            if create_payload.get("errorId") != 0:
+                raise ValueError(
+                    "2captcha Turnstile 提交失败: "
+                    f"{create_payload.get('errorDescription') or create_payload}"
+                )
+
+            task_id = create_payload["taskId"]
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                await asyncio.sleep(max(poll_interval_seconds, 1))
+                result_resp = await client.post(
+                    "https://api.2captcha.com/getTaskResult",
+                    json={
+                        "clientKey": api_key,
+                        "taskId": task_id,
+                    },
+                )
+                result_resp.raise_for_status()
+                result_payload = result_resp.json()
+                if result_payload.get("errorId") != 0:
+                    raise ValueError(
+                        "2captcha Turnstile 识别失败: "
+                        f"{result_payload.get('errorDescription') or result_payload}"
+                    )
+                if result_payload.get("status") == "processing":
+                    continue
+                if result_payload.get("status") == "ready":
+                    solution = result_payload.get("solution") or {}
+                    token = solution.get("token")
+                    if not token:
+                        raise ValueError(
+                            "2captcha Turnstile 返回结果缺少 token"
+                        )
+                    return solution
+
+        raise TimeoutError(
+            f"2captcha 在 {timeout_seconds} 秒内未返回 Turnstile 结果"
+        )
+
+    async def _get_turnstile_params(self, page: Any) -> Optional[dict[str, Any]]:
+        params = await page.evaluate(
+            """() => {
+                const state = window.__tgSignerTurnstile || {};
+                const renders = Array.isArray(state.renders) ? state.renders : [];
+                const last = renders.length ? renders[renders.length - 1] : null;
+                const widget = document.querySelector('.cf-turnstile');
+                const responseInput = document.querySelector(
+                  'input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]'
+                );
+                return {
+                  sitekey: last?.sitekey || widget?.dataset?.sitekey || null,
+                  action: last?.action || widget?.dataset?.action || null,
+                  data: last?.data || widget?.dataset?.cData || null,
+                  pagedata: last?.pagedata || widget?.dataset?.chlPageData || null,
+                  hasResponseInput: Boolean(responseInput),
+                  token: state.lastToken || responseInput?.value || null,
+                };
+            }"""
+        )
+        if not params:
+            return None
+        if not params.get("sitekey") and not params.get("hasResponseInput"):
+            return None
+        return params
+
+    async def _has_turnstile_token(self, page: Any) -> bool:
+        return bool(
+            await page.evaluate(
+                """() => {
+                    const state = window.__tgSignerTurnstile || {};
+                    const token = state.lastToken
+                      || document.querySelector(
+                        'input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]'
+                      )?.value;
+                    return Boolean(token);
+                }"""
+            )
+        )
+
+    async def _is_turnstile_visible(self, page: Any) -> bool:
+        try:
+            return bool(
+                await page.evaluate(
+                    """() => {
+                        const iframe = document.querySelector(
+                          'iframe[src*="challenges.cloudflare.com"]'
+                        );
+                        if (iframe) {
+                          return true;
+                        }
+                        const widget = document.querySelector('.cf-turnstile');
+                        if (!widget) {
+                          return false;
+                        }
+                        const style = window.getComputedStyle(widget);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
+    async def _click_turnstile_checkbox(self, page: Any, timeout_seconds: int) -> bool:
+        try:
+            widget = page.locator(".cf-turnstile").first
+            await widget.wait_for(state="visible", timeout=timeout_seconds * 1000)
+            box = await widget.bounding_box()
+            if box:
+                click_x = box["x"] + min(max(box["width"] * 0.12, 18), 35)
+                click_y = box["y"] + box["height"] / 2
+                await page.mouse.click(click_x, click_y)
+                self.log("已尝试点击 Turnstile 容器中的复选框区域。")
+                return True
+        except Exception:
+            pass
+
+        iframe_locator = page.frame_locator(
+            'iframe[src*="challenges.cloudflare.com"]'
+        ).first
+        for selector in (
+            'input[type="checkbox"]',
+            '[role="checkbox"]',
+            'label.ctp-checkbox-label',
+            '.ctp-checkbox-label',
+        ):
+            try:
+                checkbox = iframe_locator.locator(selector).first
+                await checkbox.wait_for(
+                    state="visible", timeout=timeout_seconds * 1000
+                )
+                await checkbox.click(timeout=timeout_seconds * 1000)
+                self.log(f"已尝试点击 Turnstile 复选框: {selector}")
+                return True
+            except Exception:
+                continue
+
+        try:
+            iframe = page.locator('iframe[src*="challenges.cloudflare.com"]').first
+            box = await iframe.bounding_box(timeout=timeout_seconds * 1000)
+            if box:
+                click_x = box["x"] + min(max(box["width"] * 0.12, 18), 35)
+                click_y = box["y"] + box["height"] / 2
+                await page.mouse.click(click_x, click_y)
+                self.log("已尝试按 Turnstile iframe 坐标点击复选框区域。")
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _apply_turnstile_token(self, page: Any, token: str) -> bool:
+        return bool(
+            await page.evaluate(
+                """(turnstileToken) => {
+                    const state = window.__tgSignerTurnstile || {};
+                    state.lastToken = turnstileToken;
+                    let applied = false;
+                    for (const el of document.querySelectorAll(
+                      'input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"], '
+                      + 'input[name="g-recaptcha-response"], textarea[name="g-recaptcha-response"]'
+                    )) {
+                      el.value = turnstileToken;
+                      el.textContent = turnstileToken;
+                      el.dispatchEvent(new Event('input', { bubbles: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true }));
+                      applied = true;
+                    }
+                    if (typeof state.callback === 'function') {
+                      state.callback(turnstileToken);
+                      applied = true;
+                    }
+                    return applied;
+                }""",
+                token,
+            )
+        )
+
+    async def _wait_for_turnstile_passed(
+        self, page: Any, timeout_seconds: int
+    ) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if await self._has_turnstile_token(page):
+                return True
+            if not await self._is_turnstile_visible(page):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _solve_turnstile_with_2captcha(
+        self, action: OpenWebAppByTextAction, page: Any
+    ) -> bool:
+        api_key = self._get_twocaptcha_api_key(action)
+        if not api_key:
+            self.log(
+                "未配置 2captcha API Key，无法处理 Turnstile。",
+                level="ERROR",
+            )
+            return False
+
+        params = await self._get_turnstile_params(page)
+        if not params or not params.get("sitekey"):
+            self.log(
+                "未能提取 Turnstile 的 sitekey，无法调用 2captcha。",
+                level="WARNING",
+            )
+            return False
+
+        self.log(
+            "检测到 Cloudflare Turnstile，开始调用 2captcha。"
+        )
+        solution = await self._solve_twocaptcha_turnstile(
+            api_key=api_key,
+            website_url=page.url,
+            website_key=params["sitekey"],
+            action=params.get("action"),
+            c_data=params.get("data"),
+            chl_page_data=params.get("pagedata"),
+            timeout_seconds=action.turnstile_timeout,
+            poll_interval_seconds=action.captcha_poll_interval,
+        )
+        applied = await self._apply_turnstile_token(page, solution["token"])
+        if not applied:
+            self.log(
+                "2captcha 已返回 Turnstile token，但页面未找到回填入口。",
+                level="WARNING",
+            )
+            return False
+        self.log("2captcha Turnstile token 已注入页面。")
+        return await self._wait_for_turnstile_passed(page, action.turnstile_timeout)
+
+    async def _handle_turnstile_after_button_click(
+        self, action: OpenWebAppByTextAction, page: Any
+    ) -> str:
+        if not action.turnstile_enabled:
+            return "done"
+
+        await page.wait_for_timeout(1500)
+        if not await self._is_turnstile_visible(page):
+            return "done"
+
+        self.log("检测到 Cloudflare Turnstile 验证。")
+
+        if action.turnstile_auto_click:
+            auto_clicked = await self._click_turnstile_checkbox(
+                page, timeout_seconds=min(action.turnstile_timeout, 15)
+            )
+            if auto_clicked:
+                if await self._wait_for_turnstile_passed(
+                    page, action.turnstile_timeout
+                ):
+                    self.log("Cloudflare Turnstile 已自动通过。")
+                    return "retry" if action.turnstile_retry_after_solve else "done"
+                self.log(
+                    "Turnstile 复选框已点击，但仍未通过验证。",
+                    level="WARNING",
+                )
+
+        if action.turnstile_use_2captcha:
+            solved = await self._solve_turnstile_with_2captcha(action, page)
+            if solved:
+                self.log("Cloudflare Turnstile 已通过 2captcha 处理。")
+                return "retry" if action.turnstile_retry_after_solve else "done"
+
+        self.log(
+            "Cloudflare Turnstile 尚未通过，当前流程无法继续。",
+            level="WARNING",
+        )
+        return "blocked"
+
+    async def _maybe_solve_webapp_captcha(
+        self, action: OpenWebAppByTextAction, page: Any
+    ) -> bool:
+        if not action.captcha_image_selector and not action.captcha_input_selector:
+            return True
+
+        if not action.captcha_image_selector or not action.captcha_input_selector:
+            self.log(
+                "已配置 WebApp 验证码识别，但缺少图片选择器或输入框选择器。",
+                level="ERROR",
+            )
+            return False
+
+        api_key = self._get_twocaptcha_api_key(action)
+        if not api_key:
+            self.log(
+                "未配置 2captcha API Key。请在动作中填写，或设置环境变量"
+                " `TWOCAPTCHA_API_KEY`。",
+                level="ERROR",
+            )
+            return False
+
+        image_locator = page.locator(action.captcha_image_selector).first
+        input_locator = page.locator(action.captcha_input_selector).first
+
+        await image_locator.wait_for(
+            state="visible", timeout=action.button_timeout * 1000
+        )
+        await input_locator.wait_for(
+            state="visible", timeout=action.button_timeout * 1000
+        )
+        self.log(
+            f"检测到 WebApp 验证码，开始调用 2captcha: "
+            f"{action.captcha_image_selector}"
+        )
+        image_bytes = await image_locator.screenshot(type="png")
+        captcha_text = await self._solve_twocaptcha_image(
+            api_key=api_key,
+            image_bytes=image_bytes,
+            timeout_seconds=action.captcha_timeout,
+            poll_interval_seconds=action.captcha_poll_interval,
+        )
+
+        await input_locator.fill(captcha_text)
+        self.log(f"2captcha 识别完成，已填入验证码: {captcha_text}")
+
+        if action.captcha_submit_selector:
+            submit_locator = page.locator(action.captcha_submit_selector).first
+            await submit_locator.wait_for(
+                state="visible", timeout=action.button_timeout * 1000
+            )
+            await submit_locator.click(timeout=action.button_timeout * 1000)
+            self.log(
+                f"已点击验证码提交按钮: {action.captcha_submit_selector}"
+            )
+
+        if action.captcha_success_text:
+            await page.get_by_text(
+                action.captcha_success_text, exact=False
+            ).first.wait_for(
+                state="visible",
+                timeout=action.success_timeout * 1000,
+            )
+            self.log(f"检测到验证码成功文本: {action.captcha_success_text}")
+
+        return True
+
+    async def _open_webapp_by_text(
+        self, action: OpenWebAppByTextAction, message: Message
+    ) -> bool:
+        if reply_markup := message.reply_markup:
+            if isinstance(reply_markup, InlineKeyboardMarkup):
+                for btn in (
+                    b for row in reply_markup.inline_keyboard for b in row if b.text
+                ):
+                    if action.text not in btn.text:
+                        continue
+                    if not (btn.web_app or btn.url or btn.login_url):
+                        self.log(
+                            f"按钮「{btn.text}」不是 WebApp/URL 按钮，跳过",
+                            level="WARNING",
+                        )
+                        return False
+                    self.log(f"打开小程序按钮: {btn.text}")
+                    webview_url = await self._get_webview_url_from_button(message, btn)
+                    if not webview_url:
+                        self.log("未能获取小程序链接", level="WARNING")
+                        return False
+                    return await self._run_webapp_page_action(action, webview_url)
         return False
 
     async def _reply_by_calculation_problem(
@@ -1125,12 +1919,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             try:
                 if attempt > 0:
                     self.log(f"第 {attempt + 1} 次尝试识别GIF验证码...")
-                
+
                 result_index = await self.get_ai_tools().recognize_gif_code(
                     gif_bytes,
                     options,
                 )
-                
+
                 if result_index < 0 or result_index >= len(options):
                     self.log(f"AI返回的索引超出范围: {result_index}", level="WARNING")
                     last_error = ValueError(f"索引超出范围: {result_index}")
@@ -1151,10 +1945,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     button_message.id,
                     target_btn.callback_data,
                 )
-                
+
                 # 等待Bot响应，检查验证结果
                 await asyncio.sleep(1.5)  # 等待Bot处理
-                
+
                 # 检查是否收到验证码错误的响应
                 verification_failed = False
                 chat_id = button_message.chat.id
@@ -1168,7 +1962,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             msg_text = msg.text
                         elif msg.caption:
                             msg_text = msg.caption
-                        
+
                         if "验证码错误" in msg_text:
                             verification_failed = True
                             self.log(
@@ -1176,23 +1970,23 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                 level="WARNING"
                             )
                             break
-                
+
                 if verification_failed:
                     last_error = ValueError("验证码错误")
                     if attempt < max_retries - 1:
                         self.log(f"将进行第 {attempt + 2} 次重试...")
                         await asyncio.sleep(2)
                     continue
-                
+
                 self.log(f"GIF验证码识别成功（尝试 {attempt + 1}/{max_retries} 次）")
                 return True
-                
+
             except Exception as e:
                 last_error = e
                 self.log(f"第 {attempt + 1} 次识别失败: {e}", level="WARNING")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2)  # 重试前等待2秒
-        
+
         # 所有重试都失败
         self.log(f"GIF验证码识别失败，已重试 {max_retries} 次: {last_error}", level="ERROR")
         return False
@@ -1373,7 +2167,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     await self._send_bark_notification(
                         action,
                         f"WebView签到失败 - {action.bot_username}",
-                        f"签到失败: 异常返回信息",
+                        "签到失败: 异常返回信息",
                     )
                     return False
 
@@ -1420,6 +2214,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 ok = False
                 if isinstance(action, ClickKeyboardByTextAction):
                     ok = await self._click_keyboard_by_text(action, message)
+                elif isinstance(action, OpenWebAppByTextAction):
+                    ok = await self._open_webapp_by_text(action, message)
                 elif isinstance(action, ReplyByCalculationProblemAction):
                     ok = await self._reply_by_calculation_problem(action, message)
                 elif isinstance(action, ChooseOptionByImageAction):

@@ -172,6 +172,7 @@ class SupportAction(int, Enum):
     REPLY_BY_CALCULATION_PROBLEM = 5  # 回复计算题
     WEBVIEW_CHECKIN = 6  # WebView面板页面签到
     CHOOSE_OPTION_BY_GIF = 7  # 根据GIF图片选择选项
+    OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并点击页面按钮
 
     @property
     def desc(self):
@@ -183,6 +184,7 @@ class SupportAction(int, Enum):
             SupportAction.REPLY_BY_CALCULATION_PROBLEM: "回复计算题",
             SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
             SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
+            SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
         }[self]
 
 
@@ -236,6 +238,38 @@ class WebViewCheckinAction(SignAction):
     bark_enabled: bool = False  # 是否启用Bark通知（URL等配置从环境变量读取）
 
 
+class OpenWebAppByTextAction(SignAction):
+    action: Literal[SupportAction.OPEN_WEBAPP_BY_TEXT] = (
+        SupportAction.OPEN_WEBAPP_BY_TEXT
+    )
+    text: str  # Telegram消息中要点击的小程序按钮文本
+    page_button_text: str  # 打开小程序后页面中要点击的按钮文本
+    ready_text: Optional[str] = None  # 点击页面按钮前需要等待出现的文本
+    success_text: Optional[str] = None  # 点击后期望在页面中出现的文本
+    response_url_contains: Optional[str] = None  # 点击后等待命中的接口URL片段
+    response_success_key: str = "success"  # 接口返回中判定成功的字段
+    response_success_value: Union[bool, int, str] = True  # 成功字段的期望值
+    response_message_key: Optional[str] = "message"  # 失败时用于日志输出的字段
+    page_load_timeout: int = 30  # 页面加载超时时间，单位秒
+    ready_timeout: int = 30  # 等待ready_text的超时时间，单位秒
+    button_timeout: int = 60  # 等待页面按钮可点击的超时时间，单位秒
+    response_timeout: int = 15  # 等待接口响应的超时时间，单位秒
+    success_timeout: int = 15  # 等待成功文本出现的超时时间，单位秒
+    headless: bool = True  # 是否以无头模式运行浏览器
+    two_captcha_api_key: Optional[str] = None  # 2captcha API Key，可留空改用环境变量
+    captcha_image_selector: Optional[str] = None  # 验证码图片选择器
+    captcha_input_selector: Optional[str] = None  # 验证码输入框选择器
+    captcha_submit_selector: Optional[str] = None  # 验证码提交按钮选择器
+    captcha_success_text: Optional[str] = None  # 验证码成功后出现的文本
+    captcha_timeout: int = 120  # 2captcha 识别超时时间，单位秒
+    captcha_poll_interval: int = 5  # 2captcha 轮询间隔，单位秒
+    turnstile_enabled: bool = False  # 是否处理 Cloudflare Turnstile
+    turnstile_auto_click: bool = True  # 是否优先自动点击 Turnstile 复选框
+    turnstile_use_2captcha: bool = False  # 自动点击失败后是否使用 2captcha
+    turnstile_timeout: int = 90  # Turnstile 通过等待时间，单位秒
+    turnstile_retry_after_solve: bool = True  # 通过 Turnstile 后是否重试业务按钮
+
+
 ActionT: TypeAlias = Union[
     SendTextAction,
     SendDiceAction,
@@ -244,6 +278,7 @@ ActionT: TypeAlias = Union[
     ReplyByCalculationProblemAction,
     ChooseOptionByGifAction,
     WebViewCheckinAction,
+    OpenWebAppByTextAction,
 ]
 
 
@@ -307,6 +342,16 @@ class SignChatV3(BaseJSONConfig):
                     action.text[:15] + "..." if len(action.text) > 15 else action.text
                 )
                 details = f"Click: {text_preview}"
+            elif isinstance(action, OpenWebAppByTextAction):
+                text_preview = (
+                    action.text[:10] + "..." if len(action.text) > 10 else action.text
+                )
+                page_text_preview = (
+                    action.page_button_text[:10] + "..."
+                    if len(action.page_button_text) > 10
+                    else action.page_button_text
+                )
+                details = f"WebApp: {text_preview} -> {page_text_preview}"
             elif isinstance(action, WebViewCheckinAction):
                 details = f"Bot: {action.bot_username}"
 

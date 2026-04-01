@@ -3,7 +3,9 @@ import pathlib
 from types import SimpleNamespace
 
 import pytest
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
+from tg_signer.config import ClickKeyboardByTextAction, OpenWebAppByTextAction
 from tg_signer.core import (
     BaseUserWorker,
     UserSigner,
@@ -140,8 +142,8 @@ async def test_login_bootstrap_is_shared_between_concurrent_workers(
         await asyncio.sleep(0)
         return SimpleNamespace(id=123456)
 
-    async def fake_get_dialogs(self, num_of_dialogs):
-        del num_of_dialogs
+    async def fake_get_dialogs(self, limit):
+        del limit
         calls["get_dialogs"] += 1
         chat = SimpleNamespace(
             id=10001,
@@ -265,3 +267,184 @@ async def test_call_telegram_api_is_serialized_for_same_account(monkeypatch, tmp
     )
 
     assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_ignores_webapp_button(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    called = False
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        nonlocal called
+        del args, kwargs
+        called = True
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", web_app=WebAppInfo(url="https://example.com"))]]
+        ),
+    )
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="🎯 签到"), message
+    )
+
+    assert ok is False
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_open_webapp_by_text_uses_button_and_runs_page_action(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    seen = {}
+
+    async def fake_get_webview_url(message, button):
+        seen["message"] = message
+        seen["button"] = button
+        return "https://example.com/auth"
+
+    async def fake_run_webapp(action, webview_url):
+        seen["action"] = action
+        seen["webview_url"] = webview_url
+        return True
+
+    monkeypatch.setattr(signer, "_get_webview_url_from_button", fake_get_webview_url)
+    monkeypatch.setattr(signer, "_run_webapp_page_action", fake_run_webapp)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", web_app=WebAppInfo(url="https://example.com"))]]
+        ),
+    )
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+        response_url_contains="/auth/checkin/submit",
+        success_text="签到成功",
+    )
+
+    ok = await signer._open_webapp_by_text(action, message)
+
+    assert ok is True
+    assert seen["message"] is message
+    assert seen["button"].text == "🎯 签到"
+    assert seen["action"] == action
+    assert seen["webview_url"] == "https://example.com/auth"
+
+
+def test_get_twocaptcha_api_key_prefers_action_value(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    monkeypatch.setenv("TWOCAPTCHA_API_KEY", "env-key")
+
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+        two_captcha_api_key="action-key",
+    )
+
+    assert signer._get_twocaptcha_api_key(action) == "action-key"
+
+
+def test_get_twocaptcha_api_key_uses_environment(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+    monkeypatch.setenv("TWO_CAPTCHA_API_KEY", "fallback-key")
+
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+    )
+
+    assert signer._get_twocaptcha_api_key(action) == "fallback-key"
+
+
+@pytest.mark.asyncio
+async def test_solve_twocaptcha_image(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    calls = {"post": None, "poll": 0}
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, data):
+            calls["post"] = (url, data)
+            return FakeResponse({"status": 1, "request": "captcha-id"})
+
+        async def get(self, url, params):
+            calls["poll"] += 1
+            if calls["poll"] == 1:
+                return FakeResponse({"status": 0, "request": "CAPCHA_NOT_READY"})
+            return FakeResponse({"status": 1, "request": "ABCD"})
+
+    async def fake_sleep(_):
+        return None
+
+    import tg_signer.core as core
+
+    monkeypatch.setattr(core.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
+
+    result = await signer._solve_twocaptcha_image(
+        api_key="test-key",
+        image_bytes=b"image-bytes",
+        timeout_seconds=10,
+        poll_interval_seconds=1,
+    )
+
+    assert result == "ABCD"
+    assert calls["post"][0] == "https://2captcha.com/in.php"
+    assert calls["post"][1]["key"] == "test-key"
+    assert calls["post"][1]["method"] == "base64"
+    assert calls["poll"] == 2

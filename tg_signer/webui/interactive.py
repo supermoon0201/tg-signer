@@ -8,6 +8,7 @@ from tg_signer.config import (
     ActionT,
     ChooseOptionByImageAction,
     ClickKeyboardByTextAction,
+    OpenWebAppByTextAction,
     ReplyByCalculationProblemAction,
     SendDiceAction,
     SendTextAction,
@@ -278,6 +279,10 @@ class InteractiveSignerConfig:
                                 detail = action.dice
                             elif isinstance(action, ClickKeyboardByTextAction):
                                 detail = action.text
+                            elif isinstance(action, OpenWebAppByTextAction):
+                                detail = (
+                                    f"{action.text} -> {action.page_button_text}"
+                                )
 
                             ui.label(f"{desc} {detail}").classes("text-sm")
                             ui.button(
@@ -320,6 +325,43 @@ class InteractiveSignerConfig:
                                 ).classes("w-full")
                             elif t == SupportAction.CLICK_KEYBOARD_BY_TEXT:
                                 inputs["text"] = ui.input("按钮文本").classes("w-full")
+                            elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
+                                inputs["text"] = ui.input(
+                                    "Telegram按钮文本"
+                                ).classes("w-full")
+                                inputs["page_button_text"] = ui.input(
+                                    "页面按钮文本"
+                                ).classes("w-full")
+                                inputs["ready_text"] = ui.input(
+                                    "点击前等待文本（可选）"
+                                ).classes("w-full")
+                                inputs["response_url_contains"] = ui.input(
+                                    "接口URL片段（可选）"
+                                ).classes("w-full")
+                                inputs["success_text"] = ui.input(
+                                    "成功提示文本（可选）"
+                                ).classes("w-full")
+                                inputs["turnstile_enabled"] = ui.checkbox(
+                                    "处理 Cloudflare Turnstile"
+                                )
+                                inputs["turnstile_use_2captcha"] = ui.checkbox(
+                                    "Turnstile 失败时使用 2captcha"
+                                )
+                                inputs["captcha_image_selector"] = ui.input(
+                                    "验证码图片选择器（可选）"
+                                ).classes("w-full")
+                                inputs["captcha_input_selector"] = ui.input(
+                                    "验证码输入框选择器（可选）"
+                                ).classes("w-full")
+                                inputs["captcha_submit_selector"] = ui.input(
+                                    "验证码提交按钮选择器（可选）"
+                                ).classes("w-full")
+                                inputs["captcha_success_text"] = ui.input(
+                                    "验证码成功文本（可选）"
+                                ).classes("w-full")
+                                inputs["two_captcha_api_key"] = ui.input(
+                                    "2captcha API Key（可选，留空则走环境变量）"
+                                ).classes("w-full")
                             elif t == SupportAction.CHOOSE_OPTION_BY_IMAGE:
                                 ui.label("将使用AI识别图片并选择").classes(
                                     "text-sm text-gray-500"
@@ -348,6 +390,55 @@ class InteractiveSignerConfig:
                                 if not txt:
                                     raise ValueError("请输入按钮文本")
                                 new_action = ClickKeyboardByTextAction(text=txt)
+                            elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
+                                txt = inputs["text"].value
+                                page_button_text = inputs["page_button_text"].value
+                                if not txt:
+                                    raise ValueError("请输入Telegram按钮文本")
+                                if not page_button_text:
+                                    raise ValueError("请输入页面按钮文本")
+                                ready_text = inputs["ready_text"].value or None
+                                response_url_contains = (
+                                    inputs["response_url_contains"].value or None
+                                )
+                                success_text = inputs["success_text"].value or None
+                                turnstile_enabled = bool(
+                                    inputs["turnstile_enabled"].value
+                                )
+                                turnstile_use_2captcha = bool(
+                                    inputs["turnstile_use_2captcha"].value
+                                )
+                                captcha_image_selector = (
+                                    inputs["captcha_image_selector"].value or None
+                                )
+                                captcha_input_selector = (
+                                    inputs["captcha_input_selector"].value or None
+                                )
+                                captcha_submit_selector = (
+                                    inputs["captcha_submit_selector"].value or None
+                                )
+                                captcha_success_text = (
+                                    inputs["captcha_success_text"].value or None
+                                )
+                                two_captcha_api_key = (
+                                    inputs["two_captcha_api_key"].value or None
+                                )
+                                if captcha_image_selector and not captcha_input_selector:
+                                    raise ValueError("已填写验证码图片选择器时，必须填写输入框选择器")
+                                new_action = OpenWebAppByTextAction(
+                                    text=txt,
+                                    page_button_text=page_button_text,
+                                    ready_text=ready_text,
+                                    response_url_contains=response_url_contains,
+                                    success_text=success_text,
+                                    turnstile_enabled=turnstile_enabled,
+                                    turnstile_use_2captcha=turnstile_use_2captcha,
+                                    captcha_image_selector=captcha_image_selector,
+                                    captcha_input_selector=captcha_input_selector,
+                                    captcha_submit_selector=captcha_submit_selector,
+                                    captcha_success_text=captcha_success_text,
+                                    two_captcha_api_key=two_captcha_api_key,
+                                )
                             elif t == SupportAction.CHOOSE_OPTION_BY_IMAGE:
                                 new_action = ChooseOptionByImageAction()
                             elif t == SupportAction.REPLY_BY_CALCULATION_PROBLEM:
