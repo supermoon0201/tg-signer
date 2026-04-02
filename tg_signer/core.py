@@ -1509,7 +1509,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return raw_url
 
     async def _run_webapp_page_action(
-        self, action: OpenWebAppByTextAction, webview_url: str
+        self,
+        action: OpenWebAppByTextAction,
+        webview_url: str,
+        route_key: Optional[RouteKey] = None,
     ) -> bool:
         try:
             from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -1641,7 +1644,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             self.log(
                                 f"WebApp 接口返回成功: {payload.get(action.response_success_key)}"
                             )
-                            return True
+                            if await self._wait_for_webapp_telegram_success(
+                                route_key, action
+                            ):
+                                return True
+                            return not bool(action.telegram_success_text)
                         self.log(
                             "WebApp 接口响应不是JSON，无法判定成功: "
                             f"{response_result.get('text') or response_result}",
@@ -1659,12 +1666,43 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         self.log(
                             f"检测到 WebApp 成功提示文本: {action.success_text}"
                         )
+                    if await self._wait_for_webapp_telegram_success(route_key, action):
+                        return True
+                    if action.telegram_success_text:
+                        self.log(
+                            f"等待 Telegram 成功消息超时: {action.telegram_success_text}",
+                            level="WARNING",
+                        )
+                        return False
                     return True
                 finally:
                     await browser.close()
         except Exception as e:
             self.log(f"WebApp 页面操作失败: {e}", level="ERROR")
             return False
+
+    async def _wait_for_webapp_telegram_success(
+        self, route_key: Optional[RouteKey], action: OpenWebAppByTextAction
+    ) -> bool:
+        if not route_key or not action.telegram_success_text:
+            return False
+
+        self.log(f"等待 Telegram 成功消息: {action.telegram_success_text}")
+        start = time.perf_counter()
+        target = self._normalize_match_text(action.telegram_success_text)
+        while time.perf_counter() - start < action.telegram_success_timeout:
+            messages_dict = self.context.chat_messages.get(route_key, {})
+            for message in reversed(list(messages_dict.values())):
+                if not message:
+                    continue
+                text = self._normalize_match_text(self._message_match_text(message))
+                if target in text:
+                    self.log(
+                        f"检测到 Telegram 成功消息: {action.telegram_success_text}"
+                    )
+                    return True
+            await asyncio.sleep(0.3)
+        return False
 
     def _get_twocaptcha_api_key(self, action: OpenWebAppByTextAction) -> Optional[str]:
         return (
@@ -2121,7 +2159,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     if not webview_url:
                         self.log("未能获取小程序链接", level="WARNING")
                         return False
-                    return await self._run_webapp_page_action(action, webview_url)
+                    route_key = self.get_route_key(
+                        message.chat.id,
+                        getattr(message, "message_thread_id", None),
+                    )
+                    return await self._run_webapp_page_action(
+                        action,
+                        webview_url,
+                        route_key=route_key,
+                    )
         return False
 
     async def _reply_by_calculation_problem(

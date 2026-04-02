@@ -251,6 +251,7 @@ class OpenWebAppByTextAction(SignAction):
     page_button_text: str  # 打开小程序后页面中要点击的按钮文本
     ready_text: Optional[str] = None  # 点击页面按钮前需要等待出现的文本
     success_text: Optional[str] = None  # 点击后期望在页面中出现的文本
+    telegram_success_text: Optional[str] = None  # 点击后期望在Telegram消息中出现的文本
     response_url_contains: Optional[str] = None  # 点击后等待命中的接口URL片段
     response_success_key: str = "success"  # 接口返回中判定成功的字段
     response_success_value: Union[bool, int, str] = True  # 成功字段的期望值
@@ -260,6 +261,7 @@ class OpenWebAppByTextAction(SignAction):
     button_timeout: int = 60  # 等待页面按钮可点击的超时时间，单位秒
     response_timeout: int = 15  # 等待接口响应的超时时间，单位秒
     success_timeout: int = 15  # 等待成功文本出现的超时时间，单位秒
+    telegram_success_timeout: int = 20  # 等待Telegram成功消息超时时间，单位秒
     headless: bool = True  # 是否以无头模式运行浏览器
     two_captcha_api_key: Optional[str] = None  # 2captcha API Key，可留空改用环境变量
     captcha_image_selector: Optional[str] = None  # 验证码图片选择器

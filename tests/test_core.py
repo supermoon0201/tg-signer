@@ -982,9 +982,10 @@ async def test_open_webapp_by_text_uses_button_and_runs_page_action(
         seen["button"] = button
         return "https://example.com/auth"
 
-    async def fake_run_webapp(action, webview_url):
+    async def fake_run_webapp(action, webview_url, route_key=None):
         seen["action"] = action
         seen["webview_url"] = webview_url
+        seen["route_key"] = route_key
         return True
 
     monkeypatch.setattr(signer, "_get_webview_url_from_button", fake_get_webview_url)
@@ -1011,6 +1012,131 @@ async def test_open_webapp_by_text_uses_button_and_runs_page_action(
     assert seen["button"].text == "🎯 签到"
     assert seen["action"] == action
     assert seen["webview_url"] == "https://example.com/auth"
+    assert seen["route_key"] == signer.get_route_key(123, None)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_webapp_telegram_success_matches_chat_message(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+    signer.context.chat_messages[route_key][1] = SimpleNamespace(
+        text="🎉 签到成功 | 5 金币\n💴 当前持有 | 13 金币\n⏳ 签到日期 | 2026-04-02",
+        caption=None,
+        reply_markup=None,
+    )
+
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+        telegram_success_text="签到成功",
+        telegram_success_timeout=1,
+    )
+
+    ok = await signer._wait_for_webapp_telegram_success(route_key, action)
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+        success_text="签到成功，奖励已发放。",
+        telegram_success_text="签到成功",
+        telegram_success_timeout=1,
+        turnstile_enabled=False,
+    )
+
+    class FakeButton:
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def click(self, **kwargs):
+            signer.context.chat_messages[route_key][1] = SimpleNamespace(
+                text="🎉 签到成功 | 5 金币",
+                caption=None,
+                reply_markup=None,
+            )
+            return None
+
+    class FakeTextLocator:
+        def __init__(self, action_text):
+            self.action_text = action_text
+            self.first = self
+
+        async def wait_for(self, **kwargs):
+            return None
+
+    class FakePage:
+        def on(self, *args, **kwargs):
+            return None
+
+        async def goto(self, *args, **kwargs):
+            return None
+
+        def get_by_role(self, *args, **kwargs):
+            return FakeButton()
+
+        def get_by_text(self, text, exact=False):
+            del exact
+            return FakeTextLocator(text)
+
+    class FakeBrowser:
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            return None
+
+    class FakeChromium:
+        async def launch(self, headless=True):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    import types
+    import sys
+
+    fake_async_api = types.SimpleNamespace(
+        TimeoutError=TimeoutError,
+        async_playwright=lambda: FakePlaywright(),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_async_api)
+    monkeypatch.setattr(signer, "_maybe_solve_webapp_captcha", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        signer, "_handle_turnstile_after_button_click", AsyncMock(return_value=None)
+    )
+
+    ok = await signer._run_webapp_page_action(
+        action,
+        "https://example.com/auth",
+        route_key=route_key,
+    )
+
+    assert ok is True
 
 
 def test_get_twocaptcha_api_key_prefers_action_value(monkeypatch, tmp_path):

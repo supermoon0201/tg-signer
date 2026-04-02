@@ -391,6 +391,9 @@ class InteractiveSignerConfig:
                                 inputs["success_text"] = ui.input(
                                     "成功提示文本（可选）"
                                 ).classes("w-full")
+                                inputs["telegram_success_text"] = ui.input(
+                                    "Telegram成功消息文本（可选）"
+                                ).classes("w-full")
                                 inputs["turnstile_enabled"] = ui.checkbox(
                                     "处理 Cloudflare Turnstile"
                                 )
@@ -467,6 +470,9 @@ class InteractiveSignerConfig:
                                     inputs["response_url_contains"].value or None
                                 )
                                 success_text = inputs["success_text"].value or None
+                                telegram_success_text = (
+                                    inputs["telegram_success_text"].value or None
+                                )
                                 turnstile_enabled = bool(
                                     inputs["turnstile_enabled"].value
                                 )
@@ -496,6 +502,7 @@ class InteractiveSignerConfig:
                                     ready_text=ready_text,
                                     response_url_contains=response_url_contains,
                                     success_text=success_text,
+                                    telegram_success_text=telegram_success_text,
                                     turnstile_enabled=turnstile_enabled,
                                     turnstile_use_2captcha=turnstile_use_2captcha,
                                     captcha_image_selector=captcha_image_selector,
