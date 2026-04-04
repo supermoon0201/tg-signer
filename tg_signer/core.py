@@ -2148,26 +2148,39 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 ):
                     if action.text not in btn.text:
                         continue
-                    if not (btn.web_app or btn.url or btn.login_url):
-                        self.log(
-                            f"按钮「{btn.text}」不是 WebApp/URL 按钮，跳过",
-                            level="WARNING",
+                    if btn.web_app or btn.url or btn.login_url:
+                        self.log(f"打开小程序按钮: {btn.text}")
+                        webview_url = await self._get_webview_url_from_button(
+                            message, btn
                         )
-                        return False
-                    self.log(f"打开小程序按钮: {btn.text}")
-                    webview_url = await self._get_webview_url_from_button(message, btn)
-                    if not webview_url:
-                        self.log("未能获取小程序链接", level="WARNING")
-                        return False
-                    route_key = self.get_route_key(
-                        message.chat.id,
-                        getattr(message, "message_thread_id", None),
+                        if not webview_url:
+                            self.log("未能获取小程序链接", level="WARNING")
+                            return False
+                        route_key = self.get_route_key(
+                            message.chat.id,
+                            getattr(message, "message_thread_id", None),
+                        )
+                        return await self._run_webapp_page_action(
+                            action,
+                            webview_url,
+                            route_key=route_key,
+                        )
+                    if btn.callback_data:
+                        self.log(
+                            f"按钮「{btn.text}」不是 WebApp/URL 按钮，先按普通按钮处理"
+                        )
+                        answer = await self.request_callback_answer(
+                            self.app,
+                            message.chat.id,
+                            message.id,
+                            btn.callback_data,
+                        )
+                        return answer is not None
+                    self.log(
+                        f"按钮「{btn.text}」既不是 WebApp/URL 按钮，也不是可点击回调按钮，跳过",
+                        level="WARNING",
                     )
-                    return await self._run_webapp_page_action(
-                        action,
-                        webview_url,
-                        route_key=route_key,
-                    )
+                    return False
         return False
 
     async def _reply_by_calculation_problem(

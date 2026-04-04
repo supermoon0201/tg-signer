@@ -1016,6 +1016,46 @@ async def test_open_webapp_by_text_uses_button_and_runs_page_action(
 
 
 @pytest.mark.asyncio
+async def test_open_webapp_by_text_clicks_callback_button(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    seen = {}
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        seen["app"] = app
+        assert chat_id == 123
+        assert message_id == 456
+        assert callback_data == "sign"
+        return BotCallbackAnswer(cache_time=0, alert=False, message=None)
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", callback_data="sign")]]
+        ),
+    )
+    action = OpenWebAppByTextAction(
+        text="🎯 签到",
+        page_button_text="验证并签到",
+        response_url_contains="/auth/checkin/submit",
+        success_text="签到成功",
+    )
+
+    ok = await signer._open_webapp_by_text(action, message)
+
+    assert ok is True
+    assert seen["app"] is signer.app
+
+
+@pytest.mark.asyncio
 async def test_wait_for_webapp_telegram_success_matches_chat_message(tmp_path):
     signer = UserSigner(
         task_name="task",
@@ -1064,6 +1104,9 @@ async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tm
     )
 
     class FakeButton:
+        def __init__(self):
+            self.first = self
+
         async def wait_for(self, **kwargs):
             return None
 
