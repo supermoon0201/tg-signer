@@ -38,7 +38,11 @@ pip install "tg-signer[gui]"
 
 ### Docker
 
-未上传直接使用的镜像，可以自行build镜像，见 [docker](./docker) 目录下的Dockerfile和 [README](./docker/README.md) 。
+#### GitHub Container Registry
+在 GitHub Container Registry 提供了两种预构建镜像：`ghcr.io/amchii/tg-signer:<tag>`（CLI）和 `ghcr.io/amchii/tg-signer:<tag>-webui`（CLI + WebUI）。
+
+#### 本地
+如果需要自行构建镜像，本地 build 方式仍然保留，见 [docker](./docker) 目录下的 Dockerfile 和 [README](./docker/README.md) 。
 
 仓库根目录的 `docker compose up -d` 默认构建的是轻量 CLI 镜像，用于签到、监控、消息处理和 AI 识图等任务，不包含 WebUI 依赖。
 
@@ -487,6 +491,15 @@ tg-signer monitor run my_monitor
 ```
 
 ### 版本变动日志
+
+#### 0.8.6
+- 支持 Telegram 论坛群组话题 `message_thread_id`
+- 登录时可发现群组话题，新增 `list-topics` 用于查询话题 ID
+- `send-text`、`send-dice`、`schedule-messages`、签到配置与 WebUI 支持发送到指定话题
+- 签到记录迁移到 SQLite，新增 `list-sign-records` 与 `migrate-sign-records`
+- 兼容读取旧版 `sign_record.json`，运行任务时可自动导入历史记录
+- 发布官方 GHCR 镜像：`ghcr.io/amchii/tg-signer:<tag>` 与 `ghcr.io/amchii/tg-signer:<tag>-webui`
+- 改进论坛群组、频道私信等场景下的话题发现与消息发送兼容性
 
 #### 0.8.5
 - "kurigram>=2.2.19,<2.3.0"
