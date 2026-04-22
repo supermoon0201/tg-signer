@@ -164,6 +164,18 @@ Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 For forum-style groups, the login output also prints each topic's
 `message_thread_id`, which can be used directly with `--message-thread-id`.
 
+### Time Zone
+
+Scheduling-related commands such as `run` and `schedule-messages` resolve the
+time zone in the following order:
+
+1. the `TZ` environment variable
+2. the local time zone recognized by Python
+3. `Asia/Shanghai` as the final fallback
+
+If you need schedules to follow a specific time zone, set `TZ` before starting
+the process.
+
 ### Get Group Topic IDs
 
 ```sh

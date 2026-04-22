@@ -140,6 +140,16 @@ tg-signer login
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
 
+### 时区
+
+调度相关命令（如 `run` 和 `schedule-messages`）会按以下顺序解析时区：
+
+1. 环境变量 `TZ`
+2. Python 识别到的本地时区
+3. 默认回退到 `Asia/Shanghai`
+
+如果你需要按特定时区计算下次执行时间，直接在运行前设置 `TZ` 即可。
+
 ### 获取群组话题 ID
 
 ```sh

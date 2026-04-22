@@ -6,7 +6,7 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from datetime import time as dt_time
 from typing import (
     Annotated,
@@ -64,7 +64,8 @@ from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.server_chan import sc_send
 from .sign_record_store import SignRecordStore
-from .utils import UserInput, print_to_user
+from .utils import UserInput, get_now, print_to_user
+from .utils import get_timezone as _get_timezone
 
 logger = logging.getLogger("tg-signer")
 
@@ -142,6 +143,7 @@ _API_FLOODWAIT_PADDING_SECONDS = 0.5
 _API_MAX_FLOODWAIT_RETRIES = 2
 
 RouteKey = tuple[ChatId, Optional[int]]
+get_timezone = _get_timezone
 
 
 class Client(SafeGetForumTopics, BaseClient):
@@ -253,10 +255,6 @@ def get_client(
     )
     _CLIENT_INSTANCES[key] = client
     return client
-
-
-def get_now():
-    return datetime.now(tz=timezone(timedelta(hours=8)))
 
 
 def make_dirs(path: pathlib.Path, exist_ok=True):
