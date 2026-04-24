@@ -123,7 +123,6 @@ _test*.json
 .nicegui
 
 .agent
-
 .serena
 .history
 nul

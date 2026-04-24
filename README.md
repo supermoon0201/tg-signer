@@ -9,6 +9,7 @@
 - 调用AI进行图片识别并点击键盘
 - 个人、群组、频道消息监控、转发与自动回复
 - 根据配置执行动作流
+- 自动化规则引擎（message/timer/startup 触发 + handler 链）
 
   **...**
 
@@ -24,6 +25,12 @@ pip install -U tg-signer
 
 ```sh
 pip install "tg-signer[speedup]"
+```
+
+启用 YAML 配置支持：
+
+```sh
+pip install "tg-signer[yaml]"
 ```
 #### WebUI
 tg-signer附带了一个WebUI，安装命令:
@@ -89,6 +96,7 @@ Commands:
   login                   登录账号（用于获取session）
   migrate-sign-records    将签到记录从 JSON 迁移到 SQLite（默认保留原...
   logout                  登出账号并删除session文件
+  automation              配置和运行自动化规则（推荐，覆盖monitor能力）
   monitor                 配置和运行监控
   multi-run               使用一套配置同时运行多个账号
   reconfig                重新配置
@@ -111,6 +119,7 @@ tg-signer run-once my_sign  # 直接运行一次'my_sign'任务
 tg-signer list-sign-records linuxdo -n 5  # 查看任务 linuxdo 最近 5 条签到记录
 tg-signer migrate-sign-records  # 将.signer/signs 下的签到记录迁移到 SQLite
 tg-signer send-text 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本
+tg-signer send-text @neo /test  # 向username为'@neo'的聊天发送'/test'文本
 tg-signer send-text --message-thread-id 1 -- -1003763902761 checkin  # 发送到群组话题(message_thread_id=1)
 tg-signer send-text -- -10006758812 浇水  # 对于负数需要使用POSIX风格，在短横线'-'前方加上'--'
 tg-signer send-text --delete-after 1 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本, 并在1秒后删除发送的消息
@@ -118,10 +127,24 @@ tg-signer list-members --chat_id -1001680975844 --admin  # 列出频道的管理
 tg-signer list-topics --chat_id -1003763902761 --limit 50  # 列出群组话题及message_thread_id
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 10 -- -1001680975844 你好  # 在未来10天的每天0点向'-1001680975844'发送消息
 tg-signer schedule-messages --crontab '0 0 * * *' --next-times 3 --message-thread-id 1 -- -1003763902761 你好  # 配置群组话题的定时消息
+tg-signer automation init my_auto  # 初始化自动化模板
+tg-signer automation run my_auto  # 运行自动化任务
 tg-signer monitor run  # 配置个人、群组、频道消息监控与自动回复
 tg-signer multi-run -a account_a -a account_b same_task  # 使用'same_task'的配置同时运行'account_a'和'account_b'两个账号
 tg-signer webgui --auth-code averycomplexcode  # 启动一个WebGUI
 ```
+
+### 自动化规则（automation）
+
+推荐使用 `tg-signer automation` 统一管理自动化规则（覆盖 monitor 能力）。
+
+```sh
+tg-signer automation init my_auto
+# 编辑 .signer/automations/my_auto/config.json
+tg-signer automation run my_auto
+```
+
+更多详细使用说明与示例见：`docs/automation_usage.md`
 
 ### 配置代理（如有需要）
 
@@ -140,7 +163,18 @@ tg-signer login
 ```
 
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
+签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
+
+### 时区
+
+调度相关命令（如 `run` 和 `schedule-messages`）会按以下顺序解析时区：
+
+1. 环境变量 `TZ`
+2. Python 识别到的本地时区
+3. 默认回退到 `Asia/Shanghai`
+
+如果你需要按特定时区计算下次执行时间，直接在运行前设置 `TZ` 即可。
 
 ### 获取群组话题 ID
 
@@ -154,6 +188,7 @@ tg-signer list-topics --chat_id -1003763902761
 
 ```sh
 tg-signer send-text 8671234001 hello  # 向chat_id为'8671234001'的聊天发送'hello'文本
+tg-signer send-text @neo hello  # 向username为'@neo'的聊天发送'hello'文本
 ```
 
 ### 运行签到任务
@@ -175,7 +210,7 @@ tg-signer run linuxdo
 ```
 开始配置任务<linuxdo>
 第1个签到
-一. Chat ID（登录时最近对话输出中的ID）: 7661096533
+一. Chat ID（登录时最近对话输出中的ID或@username）: 7661096533
 二. Chat名称（可选）: jerry bot
 三. 是否发送到话题（message_thread_id）？(y/N)：y
 四. message_thread_id: 1
@@ -315,6 +350,7 @@ playwright install chromium
 如果你在 Docker 中运行，默认的 CLI 镜像已经包含 `playwright` 和 Chromium，无需在容器内额外安装浏览器。
 
 ### 配置与运行监控
+说明：monitor 为 legacy 功能，推荐使用 `tg-signer automation` 统一管理自动化规则。
 
 ```sh
 tg-signer monitor run my_monitor
@@ -597,6 +633,10 @@ tg-signer monitor run my_monitor
 │   └── 123456789
 │       ├── latest_chats.json  # 获取的最近对话
 │       └── me.json  # 个人信息
+├── automations  # 自动化规则
+│   ├── my_auto  # 自动化任务名
+│       ├── config.json  # 自动化配置
+│       └── state.json  # 运行状态
 └── signs  # 签到任务
     └── linuxdo  # 签到任务名
         ├── config.json  # 签到配置
@@ -604,7 +644,6 @@ tg-signer monitor run my_monitor
         │   └── sign_record.json  # 旧版 JSON 签到记录（兼容迁移）
         └── sign_record.json  # 更旧版 JSON 路径（兼容迁移）
 
-5 directories, 6 files
 ```
 
 迁移到 SQLite 后，新的签到记录只写入 `data.sqlite3`，但仍兼容读取旧

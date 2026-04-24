@@ -355,20 +355,21 @@ class AITools:
     async def calculate_problem(
         self,
         query: str,
+        sys_prompt: str = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。""",
         client: "AsyncOpenAI" = None,
         model: str = None,
         temperature=0.1,
     ) -> str:
-        sys_prompt = """你是一个**答题助手**，可以根据用户的问题给出正确的回答，只需要回复答案，不要解释，不要输出任何其他内容。"""
         model = model or self.default_model
         client = client or self.client
+        messages = []
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
+        messages.append({"role": "user", "content": text})
         # noinspection PyTypeChecker
         completion = await client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": text},
-            ],
+            messages=messages,
             model=model,
             stream=False,
             temperature=temperature,
@@ -379,7 +380,7 @@ class AITools:
 
     async def get_reply(
         self,
-        prompt: str,
+        sys_prompt: str,
         query: str,
         client: "AsyncOpenAI" = None,
         model: str = None,
@@ -389,7 +390,7 @@ class AITools:
         messages = [
             {
                 "role": "system",
-                "content": prompt,
+                "content": sys_prompt,
             },
             {"role": "user", "content": f"{query}"},
         ]

@@ -1,8 +1,9 @@
 import re
 from datetime import time
 from enum import Enum
-from functools import cached_property
 from typing import (
+    Annotated,
+    Any,
     ClassVar,
     Dict,
     List,
@@ -13,9 +14,35 @@ from typing import (
     Union,
 )
 
-from pydantic import AnyHttpUrl, BaseModel, ValidationError
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 from pyrogram.types import Chat, Message
 from typing_extensions import Self, TypeAlias
+
+ChatId: TypeAlias = Union[int, str]
+
+
+def normalize_chat_username(value: str) -> str:
+    return value.strip().lstrip("@").lower()
+
+
+def parse_chat_id_or_username(value: Union[int, str]) -> ChatId:
+    if isinstance(value, int):
+        return value
+    value = str(value).strip()
+    if not value:
+        raise ValueError("chat_id cannot be empty")
+    if value.startswith("@"):
+        if len(value) == 1:
+            raise ValueError("username cannot be empty")
+        return value
+    return int(value)
 
 
 def get_display_width(text: str) -> int:
@@ -291,12 +318,17 @@ ActionT: TypeAlias = Union[
 
 class SignChatV3(BaseJSONConfig):
     version: ClassVar = 3
-    chat_id: int
+    chat_id: ChatId
     message_thread_id: Optional[int] = None
     name: Optional[str] = None
     delete_after: Optional[int] = None
     actions: List[ActionT]
     action_interval: float = 1  # actions的间隔时间，单位秒
+
+    @field_validator("chat_id", mode="before")
+    @classmethod
+    def _parse_chat_id(cls, value):
+        return parse_chat_id_or_username(value)
 
     def __repr__(self) -> str:
         return (
@@ -434,10 +466,10 @@ class HttpCallback(BaseModel):
 
 
 class MatchConfig(BaseJSONConfig):
-    chat_id: Union[int, str] = None  # 聊天id或username
+    chat_id: ChatId  # 聊天id或username
     rule: MatchRuleT = "exact"  # 匹配规则
     rule_value: Optional[str] = None  # 规则值
-    from_user_ids: Optional[List[Union[int, str]]] = (
+    from_user_ids: Optional[List[ChatId]] = (
         None  # 发送者id或username，为空时，匹配所有人
     )
     always_ignore_me: bool = False  # 总是忽略自己发送的消息
@@ -447,14 +479,24 @@ class MatchConfig(BaseJSONConfig):
     send_text_search_regex: Optional[str] = None  # 用正则表达式从消息中提取发送内容
     delete_after: Optional[int] = None
     ignore_case: bool = True  # 忽略大小写
-    forward_to_chat_id: Optional[Union[int, str]] = (
-        None  # 转发消息到该聊天，默认为消息来源
-    )
+    forward_to_chat_id: Optional[ChatId] = None  # 转发消息到该聊天，默认为消息来源
     external_forwards: Optional[List[Union[UDPForward, HttpCallback]]] = (
         None  # 转发到外部
     )
     push_via_server_chan: bool = False  # 将消息通过server酱推送
     server_chan_send_key: Optional[str] = None  # server酱的sendkey
+
+    @field_validator("chat_id", mode="before")
+    @classmethod
+    def _parse_chat_id(cls, value):
+        return parse_chat_id_or_username(value)
+
+    @field_validator("forward_to_chat_id", mode="before")
+    @classmethod
+    def _parse_optional_chat_id(cls, value):
+        if value is None:
+            return None
+        return parse_chat_id_or_username(value)
 
     def __str__(self):
         return (
@@ -462,13 +504,13 @@ class MatchConfig(BaseJSONConfig):
             f" default_send_text={self.default_send_text}, send_text_search_regex={self.send_text_search_regex}"
         )
 
-    @cached_property
+    @property
     def from_user_set(self):
         return {
             (
                 "me"
                 if u in ["me", "self"]
-                else u.lower().strip("@")
+                else normalize_chat_username(u)
                 if isinstance(u, str)
                 else u
             )
@@ -514,7 +556,11 @@ class MatchConfig(BaseJSONConfig):
     def match_chat(self, chat: "Chat"):
         if isinstance(self.chat_id, int):
             return self.chat_id == chat.id
-        return self.chat_id == chat.username
+        if not chat.username:
+            return False
+        return normalize_chat_username(self.chat_id) == normalize_chat_username(
+            chat.username
+        )
 
     def match(self, message: "Message"):
         return self.match_chat(message.chat) and bool(
@@ -554,3 +600,97 @@ class MonitorConfig(BaseJSONConfig):
     @property
     def requires_ai(self) -> bool:
         return any(cfg.requires_ai for cfg in self.match_cfgs)
+
+
+TextRuleT: TypeAlias = MatchRuleT
+
+
+class MessageTriggerParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: Optional[Union[int, str]] = None
+    chat_ids: Optional[List[Union[int, str]]] = None
+    from_user_ids: Optional[List[Union[int, str]]] = None
+    reply_to_me: bool = False
+    reply_to_message_id: Optional[int] = None
+    ignore_case: bool = True
+
+
+class TimerTriggerParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: Optional[Union[int, str]] = None
+    cron: Optional[str] = None
+    interval_seconds: Optional[int] = None
+    random_seconds: int = 0
+
+
+class StartupTriggerParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: Optional[Union[int, str]] = None
+
+
+class BaseTriggerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: Optional[str] = None
+
+
+class MessageTriggerConfig(BaseTriggerConfig):
+    type: Literal["message"]
+    params: MessageTriggerParams = Field(default_factory=MessageTriggerParams)
+
+
+class TimerTriggerConfig(BaseTriggerConfig):
+    type: Literal["timer"]
+    params: TimerTriggerParams = Field(default_factory=TimerTriggerParams)
+
+
+class StartupTriggerConfig(BaseTriggerConfig):
+    type: Literal["startup"]
+    params: StartupTriggerParams = Field(default_factory=StartupTriggerParams)
+
+
+TriggerConfig: TypeAlias = Annotated[
+    Union[MessageTriggerConfig, TimerTriggerConfig, StartupTriggerConfig],
+    Field(discriminator="type"),
+]
+
+
+class FilterConfig(BaseModel):
+    chat_id: Optional[Union[int, str]] = None
+    chat_ids: Optional[List[Union[int, str]]] = None
+    from_user_ids: Optional[List[Union[int, str]]] = None
+    text_rule: TextRuleT = "all"
+    text_value: Optional[str] = None
+    ignore_case: bool = True
+
+
+class HandlerConfig(BaseModel):
+    handler: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RuleConfig(BaseModel):
+    id: str
+    enabled: bool = True
+    triggers: List[TriggerConfig]
+    filters: Optional[FilterConfig] = None
+    handlers: List[HandlerConfig]
+    vars: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AutomationConfig(BaseJSONConfig):
+    version: ClassVar = 1
+    is_current: ClassVar = True
+
+    rules: List[RuleConfig] = Field(default_factory=list)
+
+    @property
+    def requires_ai(self) -> bool:
+        for rule in self.rules:
+            for handler in rule.handlers:
+                if handler.handler == "ai_reply":
+                    return True
+        return False
