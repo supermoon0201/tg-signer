@@ -46,7 +46,7 @@ pip install "tg-signer[gui]"
 ### Docker
 
 #### GitHub Container Registry
-在 GitHub Container Registry 提供了两种预构建镜像：`ghcr.io/amchii/tg-signer:<tag>`（CLI）和 `ghcr.io/amchii/tg-signer:<tag>-webui`（CLI + WebUI）。
+在 GitHub Container Registry 提供预构建镜像。`yl` 分支默认发布的运行时镜像内置 `playwright` 和 Chromium，适用于 WebApp 点击、图片验证码、Cloudflare Turnstile 与 2Captcha 场景。
 
 #### 本地
 如果需要自行构建镜像，本地 build 方式仍然保留，见 [docker](./docker) 目录下的 Dockerfile 和 [README](./docker/README.md) 。
@@ -347,7 +347,7 @@ pip install playwright
 playwright install chromium
 ```
 
-如果你在 Docker 中运行，默认的 CLI 镜像已经包含 `playwright` 和 Chromium，无需在容器内额外安装浏览器。
+如果你在 Docker 中运行，默认运行时镜像已经包含 `playwright` 和 Chromium，无需在容器内额外安装浏览器。
 
 #### Nebula Bot 自动续费
 

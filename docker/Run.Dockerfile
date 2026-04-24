@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.7
 # Dockerfile for running tg-signer directly from source code (no PyInstaller)
 
 ARG PY_VERSION=3.11
@@ -10,10 +10,13 @@ FROM python:${PY_VERSION}-slim-bookworm
 ENV PIP_DISABLE_PIP_VERSION_CHECK=on \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TZ=Asia/Shanghai
 
 # Install system dependencies for headless OpenCV/video decoding
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     libssl3 \
@@ -21,7 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/* \
     && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
     && echo "${TZ}" > /etc/timezone
 
@@ -34,9 +36,10 @@ COPY assets ./assets
 
 # Install dependencies
 ARG PIP_INDEX_URL
-RUN python -m pip install --upgrade pip setuptools wheel \
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python -m pip install --upgrade pip setuptools wheel \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
-    python -m pip install --no-cache-dir \
+    python -m pip install \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
     ".[speedup]" playwright && \
     python -m playwright install --with-deps chromium

@@ -110,7 +110,7 @@ docker-compose up -d
 - WebApp 图片验证码识别
 - Cloudflare Turnstile + 2Captcha
 
-通常不需要再手动执行 `playwright install chromium`。
+因此通常不需要再手动执行 `playwright install chromium`。
 
 如果需要在容器中直接使用 2Captcha，记得传入环境变量：
 

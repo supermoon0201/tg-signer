@@ -40,9 +40,8 @@ pip install "tg-signer[gui]"
 
 #### GitHub Container Registry
 
-Two prebuilt images are published on GitHub Container Registry:
-`ghcr.io/amchii/tg-signer:<tag>` (CLI) and
-`ghcr.io/amchii/tg-signer:<tag>-webui` (CLI + WebUI).
+Prebuilt images are published on GitHub Container Registry.
+For the `yl` branch, the default runtime image includes `playwright` and Chromium for WebApp clicks, captcha solving, Cloudflare Turnstile, and 2Captcha flows.
 
 #### Local
 
@@ -340,7 +339,7 @@ pip install playwright
 playwright install chromium
 ```
 
-If you run inside Docker, the default CLI image already includes `playwright` and Chromium.
+If you run inside Docker, the default runtime image already includes `playwright` and Chromium.
 
 #### Nebula Bot Auto Renew
 

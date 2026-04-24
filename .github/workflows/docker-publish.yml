@@ -2,22 +2,26 @@ name: Publish Docker Image
 
 on:
   push:
-    tags:
-      - '*'
+    branches:
+      - yl
   workflow_dispatch:
     inputs:
       ref:
         description: Git ref to build
         required: true
-        default: main
+        default: yl
       image_tag:
         description: Docker image tag to publish for this manual run
         required: true
-        default: manual-test
+        default: yl-manual
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: docker-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -25,15 +29,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - target: cli
-            tag_suffix: ''
-            latest_tag: latest
-          - target: webui
-            tag_suffix: -webui
-            latest_tag: latest-webui
 
     steps:
       - name: Checkout repository
@@ -59,16 +54,18 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PUSH_TAG_NAME: ${{ github.ref_name }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
+          GIT_SHA: ${{ github.sha }}
           MANUAL_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             ref_name="${MANUAL_IMAGE_TAG}"
           else
-            ref_name="${PUSH_TAG_NAME}"
+            ref_name="${PUSH_REF_NAME}"
           fi
 
           image="${REGISTRY}/${IMAGE_NAME}"
+          short_sha="${GIT_SHA::7}"
 
           if [[ ! "${ref_name}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "Unsupported Docker tag format: ${ref_name}" >&2
@@ -76,30 +73,36 @@ jobs:
           fi
 
           {
-            echo "version_tag=${ref_name}${{ matrix.tag_suffix }}"
+            echo "version_tag=${ref_name}"
             echo "tags<<EOF"
-            echo "${image}:${ref_name}${{ matrix.tag_suffix }}"
+            echo "${image}:${ref_name}"
+            echo "${image}:${ref_name}-${short_sha}"
             if [[ "${EVENT_NAME}" == "push" ]]; then
-              echo "${image}:${{ matrix.latest_tag }}"
+              echo "${image}:latest"
             fi
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Build and push ${{ matrix.target }} image
+      - name: Build and push yl image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./docker/GHCR.Dockerfile
-          target: ${{ matrix.target }}
+          file: ./docker/Run.Dockerfile
           platforms: linux/amd64,linux/arm64
           provenance: false
           push: true
           tags: ${{ steps.prep.outputs.tags }}
+          build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
           labels: |
             org.opencontainers.image.title=tg-signer
-            org.opencontainers.image.description=Automated Telegram tasks with check-ins, monitoring, forwarding, and auto replies.
+            org.opencontainers.image.description=YL branch runtime image for tg-signer with playwright and chromium.
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.prep.outputs.version_tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=run-dockerfile-yl
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-yl
+          cache-to: |
+            type=gha,scope=run-dockerfile-yl,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-yl,mode=max
