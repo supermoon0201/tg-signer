@@ -349,6 +349,58 @@ playwright install chromium
 
 如果你在 Docker 中运行，默认的 CLI 镜像已经包含 `playwright` 和 Chromium，无需在容器内额外安装浏览器。
 
+#### Nebula Bot 自动续费
+
+`WebViewCheckinAction` 现在支持在签到前后顺带检查 Emby 剩余时长，并在低于阈值时自动续费。
+
+当前实现策略：
+
+1. 先调用 `/api/v1/tg/info` 获取 `expire_time`
+2. 当剩余天数小于等于 `auto_renew_threshold_days` 时，优先调用 `renew_endpoint`
+3. 当接口请求失败且 `renew_fallback_to_page: true` 时，回退到 WebApp 页面点击
+   - `前往续费`
+   - `月付` / `三月付` / `梭哈`
+   - `立即续费`
+
+可用字段：
+
+- `auto_renew_threshold_days`：剩余天数小于等于该值时自动续费，留空表示关闭
+- `renew_plan`：续费方案，支持 `month`、`quarter`、`all-in`
+- `renew_endpoint`：续费接口，Nebula 当前为 `/api/v1/tg/renew`
+- `renew_fallback_to_page`：接口失败时是否回退到页面点击
+- `renew_page_entry_text`：进入续费弹窗的按钮文本，Nebula 当前为 `前往续费`
+- `renew_page_submit_text`：确认续费按钮文本，Nebula 当前为 `立即续费`
+- `renew_page_timeout`：页面加载和按钮查找超时时间
+- `renew_response_timeout`：页面续费时等待接口返回的超时时间
+- `headless`：页面回退模式下是否以无头浏览器运行
+
+Nebula 示例配置：
+
+```json
+{
+  "action": 6,
+  "bot_username": "Nebula_Account_bot",
+  "info_endpoint": "/api/v1/tg/info",
+  "checkin_endpoint": "/api/v1/tg/checkin",
+  "auto_renew_threshold_days": 10,
+  "renew_plan": "month",
+  "renew_endpoint": "/api/v1/tg/renew",
+  "renew_fallback_to_page": true,
+  "renew_page_entry_text": "前往续费",
+  "renew_page_submit_text": "立即续费",
+  "renew_page_timeout": 30,
+  "renew_response_timeout": 15,
+  "headless": true,
+  "bark_enabled": true
+}
+```
+
+说明：
+
+- Nebula 实测中，`month` 会请求 `{"months": 1, "gambol": 0}`
+- 当续费成功时，如果配置了 `BARK_URL`，会发送 `Emby自动续费成功 - Nebula_Account_bot` 通知
+- 如果当前不在续费阈值内，则只执行原有签到/状态检查，不会额外扣除牛币
+
 ### 配置与运行监控
 说明：monitor 为 legacy 功能，推荐使用 `tg-signer automation` 统一管理自动化规则。
 

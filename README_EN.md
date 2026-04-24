@@ -342,6 +342,58 @@ playwright install chromium
 
 If you run inside Docker, the default CLI image already includes `playwright` and Chromium.
 
+#### Nebula Bot Auto Renew
+
+`WebViewCheckinAction` can now check the remaining Emby time and auto-renew when it falls below a configured threshold.
+
+Current behavior:
+
+1. Read `expire_time` from `/api/v1/tg/info`
+2. If remaining days are less than or equal to `auto_renew_threshold_days`, try `renew_endpoint` first
+3. If the API request fails and `renew_fallback_to_page: true`, fall back to WebApp clicks:
+   - `前往续费`
+   - `月付` / `三月付` / `梭哈`
+   - `立即续费`
+
+Available fields:
+
+- `auto_renew_threshold_days`: auto-renew when remaining days are below or equal to this value; leave empty to disable
+- `renew_plan`: `month`, `quarter`, or `all-in`
+- `renew_endpoint`: renew API endpoint, currently `/api/v1/tg/renew` for Nebula
+- `renew_fallback_to_page`: whether to fall back to page clicks when the API path fails
+- `renew_page_entry_text`: button text that opens the renew dialog
+- `renew_page_submit_text`: final confirm button text
+- `renew_page_timeout`: timeout for page load and button lookup
+- `renew_response_timeout`: timeout while waiting for the renew API response in page mode
+- `headless`: whether the browser runs headless during page fallback
+
+Nebula example:
+
+```json
+{
+  "action": 6,
+  "bot_username": "Nebula_Account_bot",
+  "info_endpoint": "/api/v1/tg/info",
+  "checkin_endpoint": "/api/v1/tg/checkin",
+  "auto_renew_threshold_days": 10,
+  "renew_plan": "month",
+  "renew_endpoint": "/api/v1/tg/renew",
+  "renew_fallback_to_page": true,
+  "renew_page_entry_text": "前往续费",
+  "renew_page_submit_text": "立即续费",
+  "renew_page_timeout": 30,
+  "renew_response_timeout": 15,
+  "headless": true,
+  "bark_enabled": true
+}
+```
+
+Notes:
+
+- In Nebula, `month` currently sends `{"months": 1, "gambol": 0}`
+- On successful renew, a Bark notification is sent when `BARK_URL` is configured
+- If the remaining time is above the threshold, no renew request is made and no Nebula coins are spent
+
 ### Configure and Run Monitoring
 
 ```sh

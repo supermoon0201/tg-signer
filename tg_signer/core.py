@@ -7,7 +7,7 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from typing import (
     Annotated,
@@ -2412,6 +2412,226 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 group=bark_group,
             )
 
+    def _parse_utc_datetime(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+                timezone.utc
+            )
+        except ValueError:
+            return None
+
+    def _get_emby_remaining_days(self, info_data: dict[str, Any]) -> Optional[float]:
+        expire_time = self._parse_utc_datetime(info_data.get("expire_time"))
+        if expire_time is None:
+            return None
+        return (expire_time - datetime.now(timezone.utc)).total_seconds() / 86400
+
+    def _get_renew_plan_payload(
+        self, action: WebViewCheckinAction
+    ) -> dict[str, int]:
+        if action.renew_plan == "all-in":
+            return {"months": 0, "gambol": 1}
+        if action.renew_plan == "quarter":
+            return {"months": 3, "gambol": 0}
+        return {"months": 1, "gambol": 0}
+
+    def _get_renew_plan_text(self, action: WebViewCheckinAction) -> str:
+        if action.renew_plan == "all-in":
+            return "梭哈"
+        if action.renew_plan == "quarter":
+            return "三月付"
+        return "月付"
+
+    async def _fetch_webview_info(
+        self, client: httpx.AsyncClient, url_info: str
+    ) -> dict[str, Any]:
+        resp_info = await client.get(url_info)
+        resp_info.raise_for_status()
+        info_results = resp_info.json()
+        if info_results.get("message") != "Success":
+            raise ValueError(
+                f"获取用户信息失败: {info_results.get('message', '未知错误')}"
+            )
+        return info_results
+
+    async def _renew_emby_via_api(
+        self, client: httpx.AsyncClient, action: WebViewCheckinAction, url_renew: str
+    ) -> dict[str, Any]:
+        try:
+            resp = await client.post(url_renew, json=self._get_renew_plan_payload(action))
+            payload = resp.json()
+        except Exception as e:
+            return {
+                "success": False,
+                "retryable": True,
+                "message": f"接口请求失败: {e}",
+            }
+
+        message = payload.get("message", "")
+        if resp.is_success and message == "Success":
+            return {"success": True, "retryable": False, "message": message, "data": payload}
+
+        return {
+            "success": False,
+            "retryable": resp.status_code >= 500 or not message,
+            "message": message or f"HTTP {resp.status_code}",
+            "data": payload,
+        }
+
+    async def _click_webview_text(
+        self, page: Any, text: str, timeout_seconds: int
+    ) -> None:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        locator = page.get_by_role("button", name=text, exact=False).first
+        try:
+            await locator.wait_for(state="visible", timeout=timeout_seconds * 1000)
+        except PlaywrightTimeoutError:
+            locator = page.get_by_text(text, exact=False).first
+            await locator.wait_for(state="visible", timeout=timeout_seconds * 1000)
+        await locator.click(timeout=timeout_seconds * 1000)
+
+    async def _renew_emby_via_page(
+        self, action: WebViewCheckinAction, webview_url: str
+    ) -> bool:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.log(
+                "缺少 playwright 依赖，无法回退到网页续费。"
+                "请安装 `playwright` 并执行 `playwright install chromium`。",
+                level="ERROR",
+            )
+            return False
+
+        response_future = None
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=action.headless)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                response_future = asyncio.get_running_loop().create_future()
+
+                async def on_response(resp):
+                    if action.renew_endpoint not in resp.url or response_future.done():
+                        return
+                    payload: dict[str, Any] | None = None
+                    try:
+                        payload = await resp.json()
+                    except Exception:
+                        payload = None
+                    response_future.set_result(
+                        {
+                            "status": resp.status,
+                            "payload": payload,
+                        }
+                    )
+
+                page.on("response", on_response)
+                await page.goto(
+                    webview_url,
+                    wait_until="domcontentloaded",
+                    timeout=action.renew_page_timeout * 1000,
+                )
+                await self._click_webview_text(
+                    page, action.renew_page_entry_text, action.renew_page_timeout
+                )
+                await self._click_webview_text(
+                    page, self._get_renew_plan_text(action), action.renew_page_timeout
+                )
+                await self._click_webview_text(
+                    page, action.renew_page_submit_text, action.renew_page_timeout
+                )
+
+                response = await asyncio.wait_for(
+                    response_future, timeout=action.renew_response_timeout
+                )
+                payload = response.get("payload") or {}
+                return response.get("status", 500) < 400 and payload.get("message") == "Success"
+            except Exception as e:
+                self.log(f"网页续费失败: {e}", level="WARNING")
+                return False
+            finally:
+                await browser.close()
+
+    async def _auto_renew_emby_if_needed(
+        self,
+        action: WebViewCheckinAction,
+        client: httpx.AsyncClient,
+        info_data: dict[str, Any],
+        url_info: str,
+        url_renew: str,
+        webview_url: str,
+    ) -> dict[str, Any]:
+        threshold_days = action.auto_renew_threshold_days
+        if threshold_days is None:
+            return {
+                "attempted": False,
+                "success": False,
+                "method": None,
+                "info_data": info_data,
+                "message": "未启用自动续费",
+            }
+
+        remaining_days = self._get_emby_remaining_days(info_data)
+        if remaining_days is None:
+            return {
+                "attempted": False,
+                "success": False,
+                "method": None,
+                "info_data": info_data,
+                "message": "未获取到Emby到期时间，跳过自动续费",
+            }
+
+        if remaining_days > threshold_days:
+            return {
+                "attempted": False,
+                "success": False,
+                "method": None,
+                "info_data": info_data,
+                "message": f"Emby剩余 {remaining_days:.2f} 天，大于阈值 {threshold_days} 天",
+            }
+
+        self.log(
+            f"Emby剩余 {remaining_days:.2f} 天，小于等于阈值 {threshold_days} 天，开始自动续费"
+        )
+        renew_result = await self._renew_emby_via_api(client, action, url_renew)
+        if renew_result["success"]:
+            latest_info = (await self._fetch_webview_info(client, url_info)).get("data", {})
+            return {
+                "attempted": True,
+                "success": True,
+                "method": "api",
+                "info_data": latest_info,
+                "message": "接口续费成功",
+            }
+
+        if renew_result["retryable"] and action.renew_fallback_to_page:
+            self.log(
+                f"接口续费失败，回退网页点击续费: {renew_result['message']}",
+                level="WARNING",
+            )
+            page_ok = await self._renew_emby_via_page(action, webview_url)
+            if page_ok:
+                latest_info = (await self._fetch_webview_info(client, url_info)).get("data", {})
+                return {
+                    "attempted": True,
+                    "success": True,
+                    "method": "page",
+                    "info_data": latest_info,
+                    "message": "网页续费成功",
+                }
+
+        return {
+            "attempted": True,
+            "success": False,
+            "method": "api",
+            "info_data": info_data,
+            "message": renew_result["message"],
+        }
+
     async def _webview_checkin(self, action: WebViewCheckinAction) -> bool:
         """执行 WebView 面板页面签到"""
         from pyrogram.raw.functions.messages import RequestWebView
@@ -2483,13 +2703,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
                 # 先获取用户信息
                 self.log("正在获取用户信息...")
-                resp_info = await client.get(url_info)
-                info_results = resp_info.json()
-
-                if info_results.get("message") != "Success":
-                    error_msg = (
-                        f"获取用户信息失败: {info_results.get('message', '未知错误')}"
-                    )
+                try:
+                    info_results = await self._fetch_webview_info(client, url_info)
+                except Exception as e:
+                    error_msg = str(e)
                     self.log(error_msg, level="WARNING")
                     await self._send_bark_notification(
                         action,
@@ -2504,72 +2721,99 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
                 # 检查下次签到时间
                 next_checkin_str = info_results.get("data", {}).get("next_check_in")
+                next_checkin_time = self._parse_utc_datetime(next_checkin_str)
+                checkin_result = False
                 if next_checkin_str:
-                    from datetime import datetime, timezone
+                    if next_checkin_time and next_checkin_time <= datetime.now(timezone.utc):
+                        # 执行签到
+                        self.log("正在执行签到...")
+                        resp = await client.post(url_checkin)
+                        results = resp.json()
+                        message = results.get("message", "")
 
-                    next_checkin_time = datetime.fromisoformat(
-                        next_checkin_str.split(".")[0].replace("Z", "+00:00")
-                    ).replace(tzinfo=timezone.utc)
+                        if any(s in message for s in ("未找到用户", "权限错误")):
+                            error_msg = f"账户错误 - {message}"
+                            self.log(f"签到失败: {error_msg}", level="WARNING")
+                            await self._send_bark_notification(
+                                action,
+                                f"WebView签到失败 - {action.bot_username}",
+                                f"签到失败: {error_msg}",
+                            )
+                            return False
 
-                    if next_checkin_time > datetime.now(timezone.utc):
+                        if "Failed" in message:
+                            self.log(f"签到失败: {message}", level="WARNING")
+                            await self._send_bark_notification(
+                                action,
+                                f"WebView签到失败 - {action.bot_username}",
+                                f"签到失败: {message}",
+                            )
+                            return False
+                        if "Success" in message:
+                            coin = results.get("data", {}).get("coin", 0)
+                            new_balance = current_balance + coin
+                            self.log(f"签到成功: +{coin} 分 -> {new_balance} 分")
+                            await self._send_bark_notification(
+                                action,
+                                f"WebView签到成功 - {action.bot_username}",
+                                f"签到成功: +{coin} 分 -> {new_balance} 分",
+                            )
+                            checkin_result = True
+                            info_results = await self._fetch_webview_info(client, url_info)
+                        else:
+                            error_msg = f"接收到异常返回信息: {results}"
+                            self.log(error_msg, level="WARNING")
+                            await self._send_bark_notification(
+                                action,
+                                f"WebView签到失败 - {action.bot_username}",
+                                "签到失败: 异常返回信息",
+                            )
+                            return False
+                    else:
                         self.log(
                             f"还未到签到时间，下次签到时间: {next_checkin_time}",
                             level="INFO",
                         )
-                        # 发送信息通知，让用户知道系统正在运行
-                        # 转换为北京时间显示
-                        beijing_tz = timezone(timedelta(hours=8))
-                        beijing_time = next_checkin_time.astimezone(beijing_tz)
+
+                renew_result = await self._auto_renew_emby_if_needed(
+                    action,
+                    client,
+                    info_results.get("data", {}),
+                    url_info,
+                    f"{base_url}{action.renew_endpoint}",
+                    url_auth,
+                )
+                if renew_result["attempted"]:
+                    if renew_result["success"]:
+                        latest_info = renew_result["info_data"]
+                        remaining_days = self._get_emby_remaining_days(latest_info)
+                        remain_text = (
+                            f"{remaining_days:.2f} 天"
+                            if remaining_days is not None
+                            else "未知"
+                        )
                         await self._send_bark_notification(
                             action,
-                            f"WebView签到 - {action.bot_username}",
-                            f"未到签到时间\n下次签到: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)",
+                            f"Emby自动续费成功 - {action.bot_username}",
+                            f"续费方式: {renew_result['method']}\n剩余时长: {remain_text}",
                         )
-                        return False
+                    else:
+                        await self._send_bark_notification(
+                            action,
+                            f"Emby自动续费失败 - {action.bot_username}",
+                            f"续费失败: {renew_result['message']}",
+                        )
 
-                # 执行签到
-                self.log("正在执行签到...")
-                resp = await client.post(url_checkin)
-                results = resp.json()
-                message = results.get("message", "")
+                if next_checkin_time and next_checkin_time > datetime.now(timezone.utc):
+                    beijing_tz = timezone(timedelta(hours=8))
+                    beijing_time = next_checkin_time.astimezone(beijing_tz)
+                    await self._send_bark_notification(
+                        action,
+                        f"WebView签到 - {action.bot_username}",
+                        f"未到签到时间\n下次签到: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)",
+                    )
 
-                if any(s in message for s in ("未找到用户", "权限错误")):
-                    error_msg = f"账户错误 - {message}"
-                    self.log(f"签到失败: {error_msg}", level="WARNING")
-                    await self._send_bark_notification(
-                        action,
-                        f"WebView签到失败 - {action.bot_username}",
-                        f"签到失败: {error_msg}",
-                    )
-                    return False
-
-                if "Failed" in message:
-                    self.log(f"签到失败: {message}", level="WARNING")
-                    await self._send_bark_notification(
-                        action,
-                        f"WebView签到失败 - {action.bot_username}",
-                        f"签到失败: {message}",
-                    )
-                    return False
-                elif "Success" in message:
-                    coin = results.get("data", {}).get("coin", 0)
-                    new_balance = current_balance + coin
-                    self.log(f"签到成功: +{coin} 分 -> {new_balance} 分")
-                    await self._send_bark_notification(
-                        action,
-                        f"WebView签到成功 - {action.bot_username}",
-                        f"签到成功: +{coin} 分 -> {new_balance} 分",
-                    )
-                    return True
-                else:
-                    error_msg = f"接收到异常返回信息: {results}"
-                    self.log(error_msg, level="WARNING")
-                    await self._send_bark_notification(
-                        action,
-                        f"WebView签到失败 - {action.bot_username}",
-                        "签到失败: 异常返回信息",
-                    )
-                    return False
+                return checkin_result or renew_result["success"]
 
         except Exception as e:
             error_msg = str(e)

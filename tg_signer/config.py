@@ -266,6 +266,15 @@ class WebViewCheckinAction(SignAction):
     api_base_url: Optional[str] = None  # API基础URL，如果不提供则从WebView URL中提取
     info_endpoint: str = "/api/v1/tg/info"  # 获取用户信息的端点
     checkin_endpoint: str = "/api/v1/tg/checkin"  # 签到的端点
+    auto_renew_threshold_days: Optional[int] = None  # Emby剩余时长小于等于该值时自动续费
+    renew_plan: Literal["month", "quarter", "all-in"] = "month"  # 自动续费方案
+    renew_endpoint: str = "/api/v1/tg/renew"  # 自动续费接口
+    renew_fallback_to_page: bool = True  # 接口请求失败时是否回退到网页点击
+    renew_page_entry_text: str = "前往续费"  # 网页中进入续费弹窗的按钮文本
+    renew_page_submit_text: str = "立即续费"  # 网页中确认续费的按钮文本
+    renew_page_timeout: int = 30  # 网页续费场景的页面/按钮超时时间，单位秒
+    renew_response_timeout: int = 15  # 网页续费场景等待接口返回超时时间，单位秒
+    headless: bool = True  # 自动打开WebView时是否以无头模式运行浏览器
     extra_headers: Optional[dict] = None  # 额外的请求头
     bark_enabled: bool = False  # 是否启用Bark通知（URL等配置从环境变量读取）
 

@@ -12,6 +12,15 @@
           "api_base_url": null,
           "info_endpoint": "/api/v1/tg/info",
           "checkin_endpoint": "/api/v1/tg/checkin",
+          "auto_renew_threshold_days": 10,
+          "renew_plan": "month",
+          "renew_endpoint": "/api/v1/tg/renew",
+          "renew_fallback_to_page": true,
+          "renew_page_entry_text": "前往续费",
+          "renew_page_submit_text": "立即续费",
+          "renew_page_timeout": 30,
+          "renew_response_timeout": 15,
+          "headless": true,
           "extra_headers": null,
           "bark_enabled": true
         }

@@ -1,10 +1,11 @@
 import asyncio
 import json
 import pathlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
@@ -15,6 +16,7 @@ from tg_signer.config import (
     SendTextAction,
     SignChatV3,
     SignConfigV3,
+    WebViewCheckinAction,
 )
 from tg_signer.core import (
     BaseUserWorker,
@@ -1536,3 +1538,144 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
     asyncio.run(signer.normal_run(only_once=True))
 
     assert signed_chats == [123456]
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_emby_skips_when_above_threshold(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    action = WebViewCheckinAction(
+        bot_username="Nebula_Account_bot",
+        auto_renew_threshold_days=10,
+    )
+    info_data = {
+        "expire_time": (datetime.now(timezone.utc) + timedelta(days=12)).isoformat()
+    }
+
+    result = await signer._auto_renew_emby_if_needed(
+        action,
+        client=SimpleNamespace(),
+        info_data=info_data,
+        url_info="https://example.com/api/v1/tg/info",
+        url_renew="https://example.com/api/v1/tg/renew",
+        webview_url="https://example.com",
+    )
+
+    assert result["attempted"] is False
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_emby_prefers_api(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    action = WebViewCheckinAction(
+        bot_username="Nebula_Account_bot",
+        auto_renew_threshold_days=10,
+        renew_plan="month",
+    )
+    post_calls = []
+
+    class DummyClient:
+        async def post(self, url, json):
+            post_calls.append((url, json))
+            return SimpleNamespace(
+                is_success=True,
+                status_code=200,
+                json=lambda: {"message": "Success", "data": {"months": 1}},
+            )
+
+    async def fake_fetch_info(_client, _url):
+        return {
+            "message": "Success",
+            "data": {
+                "expire_time": (
+                    datetime.now(timezone.utc) + timedelta(days=40)
+                ).isoformat()
+            },
+        }
+
+    page_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(signer, "_fetch_webview_info", fake_fetch_info)
+    monkeypatch.setattr(signer, "_renew_emby_via_page", page_mock)
+
+    result = await signer._auto_renew_emby_if_needed(
+        action,
+        client=DummyClient(),
+        info_data={
+            "expire_time": (
+                datetime.now(timezone.utc) + timedelta(days=3)
+            ).isoformat()
+        },
+        url_info="https://example.com/api/v1/tg/info",
+        url_renew="https://example.com/api/v1/tg/renew",
+        webview_url="https://example.com",
+    )
+
+    assert result["attempted"] is True
+    assert result["success"] is True
+    assert result["method"] == "api"
+    assert post_calls == [
+        ("https://example.com/api/v1/tg/renew", {"months": 1, "gambol": 0})
+    ]
+    page_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_emby_falls_back_to_page_on_retryable_api_failure(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    action = WebViewCheckinAction(
+        bot_username="Nebula_Account_bot",
+        auto_renew_threshold_days=10,
+    )
+
+    class DummyClient:
+        async def post(self, url, json):
+            raise httpx.ConnectError("network down")
+
+    async def fake_fetch_info(_client, _url):
+        return {
+            "message": "Success",
+            "data": {
+                "expire_time": (
+                    datetime.now(timezone.utc) + timedelta(days=35)
+                ).isoformat()
+            },
+        }
+
+    page_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(signer, "_fetch_webview_info", fake_fetch_info)
+    monkeypatch.setattr(signer, "_renew_emby_via_page", page_mock)
+
+    result = await signer._auto_renew_emby_if_needed(
+        action,
+        client=DummyClient(),
+        info_data={
+            "expire_time": (
+                datetime.now(timezone.utc) + timedelta(days=2)
+            ).isoformat()
+        },
+        url_info="https://example.com/api/v1/tg/info",
+        url_renew="https://example.com/api/v1/tg/renew",
+        webview_url="https://example.com",
+    )
+
+    assert result["attempted"] is True
+    assert result["success"] is True
+    assert result["method"] == "page"
+    page_mock.assert_awaited_once()
