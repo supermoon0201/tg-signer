@@ -108,6 +108,47 @@ class AITools:
         )
         self.default_model = cfg.get("model") or DEFAULT_MODEL
 
+    async def choose_option_by_text(
+        self,
+        query: str,
+        options: list[tuple[int, str]],
+        client: "AsyncOpenAI" = None,
+        model: str = None,
+        temperature=0.1,
+    ) -> int:
+        sys_prompt = """你是一个**文本选项助手**，可以根据题面文本从给定选项中选择出**唯一最合适**的答案。
+如果无法百分百确定，也必须给出最合理的一个选项。以如下JSON格式输出你的回复：
+{
+  "option": 1,
+  "reason": "这么选择的原因，30字以内"
+}
+option字段表示你选择的选项序号，从0开始。
+"""
+        client = client or self.client
+        model = model or self.default_model
+        text_query = (
+            f"题面为：{query}\n"
+            f"选项为：{json.dumps(options, ensure_ascii=False)}\n"
+            "请只根据题面内容选择最合适的选项。"
+        )
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": text_query},
+        ]
+        # noinspection PyTypeChecker
+        completion = await client.chat.completions.create(
+            messages=messages,
+            model=model,
+            response_format={"type": "json_object"},
+            stream=False,
+            temperature=temperature,
+        )
+        if not completion.choices:
+            raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
+        message = completion.choices[0].message
+        result = json_repair.loads(message.content)
+        return int(result["option"])
+
     async def choose_option_by_image(
         self,
         image: bytes,
@@ -237,7 +278,8 @@ class AITools:
                 num_frames = min(5, frame_count)
                 if num_frames > 1:
                     frame_indices = [
-                        i * (frame_count - 1) // (num_frames - 1) for i in range(num_frames)
+                        i * (frame_count - 1) // (num_frames - 1)
+                        for i in range(num_frames)
                     ]
                 else:
                     frame_indices = [0]

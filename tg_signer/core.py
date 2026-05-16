@@ -46,9 +46,10 @@ from pyrogram.types import (
 from tg_signer.config import (
     ActionT,
     BaseJSONConfig,
-    ChooseOptionByGifAction,
     ChatId,
+    ChooseOptionByGifAction,
     ChooseOptionByImageAction,
+    ChooseOptionByTextAction,
     ClickKeyboardByTextAction,
     HttpCallback,
     MatchConfig,
@@ -900,6 +901,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         "图片识别将使用大模型回答，请确保大模型支持图片识别。"
                     )
                     actions.append(ChooseOptionByImageAction())
+                elif action == SupportAction.CHOOSE_OPTION_BY_TEXT:
+                    print_to_user("文本题面选项将使用大模型回答。")
+                    actions.append(ChooseOptionByTextAction())
                 elif action == SupportAction.REPLY_BY_CALCULATION_PROBLEM:
                     print_to_user("计算题将使用大模型回答。")
                     actions.append(ReplyByCalculationProblemAction())
@@ -913,9 +917,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     text_of_btn_to_click = local_input_(
                         "Telegram消息中要点击的小程序按钮文本: "
                     )
-                    page_button_text = local_input_(
-                        "小程序页面中要点击的按钮文本: "
-                    )
+                    page_button_text = local_input_("小程序页面中要点击的按钮文本: ")
                     ready_text = local_input_(
                         "点击前需要等待出现的文本（如 验证成功，可选，直接回车跳过）: "
                     ).strip()
@@ -926,9 +928,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         "点击后期望出现的成功文本（可选，直接回车跳过）: "
                     ).strip()
                     turnstile_enabled = (
-                        local_input_(
-                            "是否处理 Cloudflare Turnstile 验证？(y/N): "
-                        ).strip().lower()
+                        local_input_("是否处理 Cloudflare Turnstile 验证？(y/N): ")
+                        .strip()
+                        .lower()
                         == "y"
                     )
                     turnstile_use_2captcha = False
@@ -936,7 +938,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         turnstile_use_2captcha = (
                             local_input_(
                                 "Turnstile 自动点击失败后是否使用 2captcha？(y/N): "
-                            ).strip().lower()
+                            )
+                            .strip()
+                            .lower()
                             == "y"
                         )
                     captcha_image_selector = local_input_(
@@ -1441,7 +1445,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         reply_markup = getattr(message, "reply_markup", None)
         if isinstance(reply_markup, InlineKeyboardMarkup):
-            for btn in (b for row in reply_markup.inline_keyboard for b in row if b.text):
+            for btn in (
+                b for row in reply_markup.inline_keyboard for b in row if b.text
+            ):
                 parts.append(btn.text)
 
         return "\n".join(parts)
@@ -1484,10 +1490,14 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if not normalized_text:
             return False
         if self._matches_done_text(action, normalized_text):
-            self.log(f"检测到已签到弹窗，结束连续点击: {getattr(answer, 'message', '')}")
+            self.log(
+                f"检测到已签到弹窗，结束连续点击: {getattr(answer, 'message', '')}"
+            )
             return True
         if self._matches_success_text(action, normalized_text):
-            self.log(f"检测到签到成功弹窗，结束连续点击: {getattr(answer, 'message', '')}")
+            self.log(
+                f"检测到签到成功弹窗，结束连续点击: {getattr(answer, 'message', '')}"
+            )
             return True
         return False
 
@@ -1629,12 +1639,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             )
 
                         await button.click(timeout=action.button_timeout * 1000)
-                        self.log(
-                            f"已在 WebApp 中点击按钮: {action.page_button_text}"
-                        )
+                        self.log(f"已在 WebApp 中点击按钮: {action.page_button_text}")
 
-                        turnstile_result = await self._handle_turnstile_after_button_click(
-                            action, page
+                        turnstile_result = (
+                            await self._handle_turnstile_after_button_click(
+                                action, page
+                            )
                         )
                         if turnstile_result == "retry":
                             self.log(
@@ -1665,8 +1675,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                 if action.response_message_key:
                                     message = payload.get(action.response_message_key)
                                 self.log(
-                                    "WebApp 接口返回失败: "
-                                    f"{message or payload}",
+                                    f"WebApp 接口返回失败: {message or payload}",
                                     level="WARNING",
                                 )
                                 return False
@@ -1692,9 +1701,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             state="visible",
                             timeout=action.success_timeout * 1000,
                         )
-                        self.log(
-                            f"检测到 WebApp 成功提示文本: {action.success_text}"
-                        )
+                        self.log(f"检测到 WebApp 成功提示文本: {action.success_text}")
                     if await self._wait_for_webapp_telegram_success(route_key, action):
                         return True
                     if action.telegram_success_text:
@@ -1793,9 +1800,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     f"2captcha 识别失败: {result_payload.get('request') or result_payload}"
                 )
 
-        raise TimeoutError(
-            f"2captcha 在 {timeout_seconds} 秒内未返回识别结果"
-        )
+        raise TimeoutError(f"2captcha 在 {timeout_seconds} 秒内未返回识别结果")
 
     async def _solve_twocaptcha_turnstile(
         self,
@@ -1860,14 +1865,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     solution = result_payload.get("solution") or {}
                     token = solution.get("token")
                     if not token:
-                        raise ValueError(
-                            "2captcha Turnstile 返回结果缺少 token"
-                        )
+                        raise ValueError("2captcha Turnstile 返回结果缺少 token")
                     return solution
 
-        raise TimeoutError(
-            f"2captcha 在 {timeout_seconds} 秒内未返回 Turnstile 结果"
-        )
+        raise TimeoutError(f"2captcha 在 {timeout_seconds} 秒内未返回 Turnstile 结果")
 
     async def _get_turnstile_params(self, page: Any) -> Optional[dict[str, Any]]:
         params = await page.evaluate(
@@ -1952,14 +1953,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         for selector in (
             'input[type="checkbox"]',
             '[role="checkbox"]',
-            'label.ctp-checkbox-label',
-            '.ctp-checkbox-label',
+            "label.ctp-checkbox-label",
+            ".ctp-checkbox-label",
         ):
             try:
                 checkbox = iframe_locator.locator(selector).first
-                await checkbox.wait_for(
-                    state="visible", timeout=timeout_seconds * 1000
-                )
+                await checkbox.wait_for(state="visible", timeout=timeout_seconds * 1000)
                 await checkbox.click(timeout=timeout_seconds * 1000)
                 self.log(f"已尝试点击 Turnstile 复选框: {selector}")
                 return True
@@ -2007,9 +2006,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
         )
 
-    async def _wait_for_turnstile_passed(
-        self, page: Any, timeout_seconds: int
-    ) -> bool:
+    async def _wait_for_turnstile_passed(self, page: Any, timeout_seconds: int) -> bool:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if await self._has_turnstile_token(page):
@@ -2038,9 +2035,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             return False
 
-        self.log(
-            "检测到 Cloudflare Turnstile，开始调用 2captcha。"
-        )
+        self.log("检测到 Cloudflare Turnstile，开始调用 2captcha。")
         solution = await self._solve_twocaptcha_turnstile(
             api_key=api_key,
             website_url=page.url,
@@ -2132,8 +2127,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             state="visible", timeout=action.button_timeout * 1000
         )
         self.log(
-            f"检测到 WebApp 验证码，开始调用 2captcha: "
-            f"{action.captcha_image_selector}"
+            f"检测到 WebApp 验证码，开始调用 2captcha: {action.captcha_image_selector}"
         )
         image_bytes = await image_locator.screenshot(type="png")
         captcha_text = await self._solve_twocaptcha_image(
@@ -2152,9 +2146,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 state="visible", timeout=action.button_timeout * 1000
             )
             await submit_locator.click(timeout=action.button_timeout * 1000)
-            self.log(
-                f"已点击验证码提交按钮: {action.captcha_submit_selector}"
-            )
+            self.log(f"已点击验证码提交按钮: {action.captcha_submit_selector}")
 
         if action.captcha_success_text:
             await page.get_by_text(
@@ -2259,6 +2251,45 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 )
                 return True
         return False
+
+    async def _choose_option_by_text(self, action: ChooseOptionByTextAction, message):
+        del action
+        reply_markup = getattr(message, "reply_markup", None)
+        if not isinstance(reply_markup, InlineKeyboardMarkup):
+            return False
+
+        prompt_text = getattr(message, "text", None) or getattr(
+            message, "caption", None
+        )
+        if not prompt_text:
+            return False
+
+        flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
+        option_to_btn = {
+            btn.text: btn for btn in flat_buttons if btn.text and btn.callback_data
+        }
+        if not option_to_btn:
+            return False
+
+        self.log("检测到文本题面和选项按钮，尝试调用大模型选择选项")
+        options = list(option_to_btn)
+        result_index = await self.get_ai_tools().choose_option_by_text(
+            prompt_text,
+            list(enumerate(options)),
+        )
+        result = options[result_index]
+        self.log(f"文本题面选择结果为: {result}")
+        target_btn = option_to_btn.get(result.strip())
+        if not target_btn:
+            self.log("未找到匹配的按钮", level="WARNING")
+            return False
+        await self.request_callback_answer(
+            self.app,
+            message.chat.id,
+            message.id,
+            target_btn.callback_data,
+        )
+        return True
 
     async def _choose_option_by_gif(
         self,
@@ -2367,7 +2398,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             verification_failed = True
                             self.log(
                                 f"验证码验证失败，Bot返回: {msg_text[:50]}",
-                                level="WARNING"
+                                level="WARNING",
                             )
                             break
 
@@ -2388,7 +2419,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     await asyncio.sleep(2)  # 重试前等待2秒
 
         # 所有重试都失败
-        self.log(f"GIF验证码识别失败，已重试 {max_retries} 次: {last_error}", level="ERROR")
+        self.log(
+            f"GIF验证码识别失败，已重试 {max_retries} 次: {last_error}", level="ERROR"
+        )
         return False
 
     async def _send_bark_notification(
@@ -2428,9 +2461,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return None
         return (expire_time - datetime.now(timezone.utc)).total_seconds() / 86400
 
-    def _get_renew_plan_payload(
-        self, action: WebViewCheckinAction
-    ) -> dict[str, int]:
+    def _get_renew_plan_payload(self, action: WebViewCheckinAction) -> dict[str, int]:
         if action.renew_plan == "all-in":
             return {"months": 0, "gambol": 1}
         if action.renew_plan == "quarter":
@@ -2460,7 +2491,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         self, client: httpx.AsyncClient, action: WebViewCheckinAction, url_renew: str
     ) -> dict[str, Any]:
         try:
-            resp = await client.post(url_renew, json=self._get_renew_plan_payload(action))
+            resp = await client.post(
+                url_renew, json=self._get_renew_plan_payload(action)
+            )
             payload = resp.json()
         except Exception as e:
             return {
@@ -2471,7 +2504,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         message = payload.get("message", "")
         if resp.is_success and message == "Success":
-            return {"success": True, "retryable": False, "message": message, "data": payload}
+            return {
+                "success": True,
+                "retryable": False,
+                "message": message,
+                "data": payload,
+            }
 
         return {
             "success": False,
@@ -2549,7 +2587,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     response_future, timeout=action.renew_response_timeout
                 )
                 payload = response.get("payload") or {}
-                return response.get("status", 500) < 400 and payload.get("message") == "Success"
+                return (
+                    response.get("status", 500) < 400
+                    and payload.get("message") == "Success"
+                )
             except Exception as e:
                 self.log(f"网页续费失败: {e}", level="WARNING")
                 return False
@@ -2599,7 +2640,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         )
         renew_result = await self._renew_emby_via_api(client, action, url_renew)
         if renew_result["success"]:
-            latest_info = (await self._fetch_webview_info(client, url_info)).get("data", {})
+            latest_info = (await self._fetch_webview_info(client, url_info)).get(
+                "data", {}
+            )
             return {
                 "attempted": True,
                 "success": True,
@@ -2615,7 +2658,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             page_ok = await self._renew_emby_via_page(action, webview_url)
             if page_ok:
-                latest_info = (await self._fetch_webview_info(client, url_info)).get("data", {})
+                latest_info = (await self._fetch_webview_info(client, url_info)).get(
+                    "data", {}
+                )
                 return {
                     "attempted": True,
                     "success": True,
@@ -2724,7 +2769,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 next_checkin_time = self._parse_utc_datetime(next_checkin_str)
                 checkin_result = False
                 if next_checkin_str:
-                    if next_checkin_time and next_checkin_time <= datetime.now(timezone.utc):
+                    if next_checkin_time and next_checkin_time <= datetime.now(
+                        timezone.utc
+                    ):
                         # 执行签到
                         self.log("正在执行签到...")
                         resp = await client.post(url_checkin)
@@ -2759,7 +2806,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                 f"签到成功: +{coin} 分 -> {new_balance} 分",
                             )
                             checkin_result = True
-                            info_results = await self._fetch_webview_info(client, url_info)
+                            info_results = await self._fetch_webview_info(
+                                client, url_info
+                            )
                         else:
                             error_msg = f"接收到异常返回信息: {results}"
                             self.log(error_msg, level="WARNING")
@@ -2874,6 +2923,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     ok = await self._reply_by_calculation_problem(action, message)
                 elif isinstance(action, ChooseOptionByImageAction):
                     ok = await self._choose_option_by_image(action, message)
+                elif isinstance(action, ChooseOptionByTextAction):
+                    ok = await self._choose_option_by_text(action, message)
                 if ok:
                     self.context.waiter.sub(route_key)
                     # 将消息ID对应value置为None，保证收到消息的编辑时消息所处的顺序
@@ -2934,9 +2985,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     )
                     if ok:
                         self.context.waiter.sub(route_key)
-                        self.context.chat_messages[route_key][button_message.id] = (
-                            None
-                        )
+                        self.context.chat_messages[route_key][button_message.id] = None
                         self.context.chat_messages[route_key][gif_message.id] = None
                         return None
                     else:

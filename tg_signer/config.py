@@ -200,6 +200,7 @@ class SupportAction(int, Enum):
     WEBVIEW_CHECKIN = 6  # WebView面板页面签到
     CHOOSE_OPTION_BY_GIF = 7  # 根据GIF图片选择选项
     OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并点击页面按钮
+    CHOOSE_OPTION_BY_TEXT = 9  # 根据文本题面选择选项
 
     @property
     def desc(self):
@@ -212,6 +213,7 @@ class SupportAction(int, Enum):
             SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
             SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
             SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
+            SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面选择选项",
         }[self]
 
 
@@ -253,8 +255,15 @@ class ReplyByCalculationProblemAction(SignAction):
     )
 
 
+class ChooseOptionByTextAction(SignAction):
+    action: Literal[SupportAction.CHOOSE_OPTION_BY_TEXT] = (
+        SupportAction.CHOOSE_OPTION_BY_TEXT
+    )
+
+
 class ChooseOptionByGifAction(SignAction):
     """根据GIF图片选择选项，用于处理验证码在单独GIF消息中的场景"""
+
     action: Literal[SupportAction.CHOOSE_OPTION_BY_GIF] = (
         SupportAction.CHOOSE_OPTION_BY_GIF
     )
@@ -266,7 +275,9 @@ class WebViewCheckinAction(SignAction):
     api_base_url: Optional[str] = None  # API基础URL，如果不提供则从WebView URL中提取
     info_endpoint: str = "/api/v1/tg/info"  # 获取用户信息的端点
     checkin_endpoint: str = "/api/v1/tg/checkin"  # 签到的端点
-    auto_renew_threshold_days: Optional[int] = None  # Emby剩余时长小于等于该值时自动续费
+    auto_renew_threshold_days: Optional[int] = (
+        None  # Emby剩余时长小于等于该值时自动续费
+    )
     renew_plan: Literal["month", "quarter", "all-in"] = "month"  # 自动续费方案
     renew_endpoint: str = "/api/v1/tg/renew"  # 自动续费接口
     renew_fallback_to_page: bool = True  # 接口请求失败时是否回退到网页点击
@@ -319,6 +330,7 @@ ActionT: TypeAlias = Union[
     ClickKeyboardByTextAction,
     ChooseOptionByImageAction,
     ReplyByCalculationProblemAction,
+    ChooseOptionByTextAction,
     ChooseOptionByGifAction,
     WebViewCheckinAction,
     OpenWebAppByTextAction,

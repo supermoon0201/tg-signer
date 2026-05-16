@@ -223,6 +223,8 @@ Check-in 1
   3: Click a keyboard button based on text
   4: Select an option based on an image
   5: Reply to a math question
+  8: Open a WebApp based on button text and click inside the page
+  9: Select an option based on message text
 
 Action 1:
 1. Enter the number of the action: 1
@@ -630,6 +632,7 @@ Continue configuring? (y/N): n
   - Click a keyboard button by text
   - Select an option by image
   - Reply to a math question
+  - Select an option by message text
 
 #### 0.6.6
 - Add support for sending DICE messages

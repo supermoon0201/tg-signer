@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from tg_signer.config import (
+    ChooseOptionByTextAction,
     ClickKeyboardByTextAction,
     OpenWebAppByTextAction,
     SendTextAction,
@@ -802,7 +803,13 @@ async def test_click_keyboard_by_text_ignores_webapp_button(monkeypatch, tmp_pat
         chat=SimpleNamespace(id=123),
         id=456,
         reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎯 签到", web_app=WebAppInfo(url="https://example.com"))]]
+            [
+                [
+                    InlineKeyboardButton(
+                        "🎯 签到", web_app=WebAppInfo(url="https://example.com")
+                    )
+                ]
+            ]
         ),
     )
 
@@ -968,6 +975,54 @@ async def test_click_keyboard_by_text_stops_on_success_message(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_choose_option_by_text_clicks_selected_button(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    class DummyAiTools:
+        async def choose_option_by_text(self, query, options):
+            assert "请依次点击下方按钮补全全诗句" in query
+            assert [text for _, text in options] == ["闲", "僧", "贫", "半"]
+            return 1
+
+    callback_calls = []
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        return True
+
+    monkeypatch.setattr(signer, "get_ai_tools", lambda: DummyAiTools())
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        text="请依次点击下方按钮补全全诗句：\n诚知此恨人人有，贫贱夫妻百事哀。",
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("闲", callback_data="a"),
+                    InlineKeyboardButton("僧", callback_data="b"),
+                    InlineKeyboardButton("贫", callback_data="c"),
+                    InlineKeyboardButton("半", callback_data="d"),
+                ]
+            ]
+        ),
+    )
+
+    ok = await signer._choose_option_by_text(ChooseOptionByTextAction(), message)
+
+    assert ok is True
+    assert callback_calls == [(123, 456, "b")]
+
+
+@pytest.mark.asyncio
 async def test_open_webapp_by_text_uses_button_and_runs_page_action(
     monkeypatch, tmp_path
 ):
@@ -998,7 +1053,13 @@ async def test_open_webapp_by_text_uses_button_and_runs_page_action(
         chat=SimpleNamespace(id=123),
         id=456,
         reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎯 签到", web_app=WebAppInfo(url="https://example.com"))]]
+            [
+                [
+                    InlineKeyboardButton(
+                        "🎯 签到", web_app=WebAppInfo(url="https://example.com")
+                    )
+                ]
+            ]
         ),
     )
     action = OpenWebAppByTextAction(
@@ -1163,15 +1224,17 @@ async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tm
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    import types
     import sys
+    import types
 
     fake_async_api = types.SimpleNamespace(
         TimeoutError=TimeoutError,
         async_playwright=lambda: FakePlaywright(),
     )
     monkeypatch.setitem(sys.modules, "playwright.async_api", fake_async_api)
-    monkeypatch.setattr(signer, "_maybe_solve_webapp_captcha", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        signer, "_maybe_solve_webapp_captcha", AsyncMock(return_value=True)
+    )
     monkeypatch.setattr(
         signer, "_handle_turnstile_after_button_click", AsyncMock(return_value=None)
     )
@@ -1611,9 +1674,7 @@ async def test_auto_renew_emby_prefers_api(monkeypatch, tmp_path):
         action,
         client=DummyClient(),
         info_data={
-            "expire_time": (
-                datetime.now(timezone.utc) + timedelta(days=3)
-            ).isoformat()
+            "expire_time": (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
         },
         url_info="https://example.com/api/v1/tg/info",
         url_renew="https://example.com/api/v1/tg/renew",
@@ -1666,9 +1727,7 @@ async def test_auto_renew_emby_falls_back_to_page_on_retryable_api_failure(
         action,
         client=DummyClient(),
         info_data={
-            "expire_time": (
-                datetime.now(timezone.utc) + timedelta(days=2)
-            ).isoformat()
+            "expire_time": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
         },
         url_info="https://example.com/api/v1/tg/info",
         url_renew="https://example.com/api/v1/tg/renew",
