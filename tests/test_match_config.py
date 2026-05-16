@@ -134,6 +134,62 @@ class TestMatchConfig:
             config.get_send_text("hello world")
         assert "hello world" in str(excinfo.value)
 
+    def test_get_send_text_with_template_uses_first_capture(self):
+        config = MatchConfig(
+            chat_id=123,
+            rule="exact",
+            rule_value="hello",
+            default_send_text="default text",
+            send_text_search_regex=r"参与关键词：「(.*?)」",
+            send_text_template="我要参加：{extracted}",
+        )
+
+        assert config.get_send_text("参与关键词：「抽奖」") == "我要参加：抽奖"
+
+    def test_get_send_text_with_template_uses_named_capture(self):
+        config = MatchConfig(
+            chat_id=123,
+            rule="exact",
+            rule_value="hello",
+            send_text_search_regex=r"code=(?P<code>\w+)",
+            send_text_template="验证码 {code}",
+        )
+
+        assert config.get_send_text("code=ABC123") == "验证码 ABC123"
+
+    def test_get_send_text_with_template_keeps_unknown_placeholders(self):
+        config = MatchConfig(
+            chat_id=123,
+            rule="exact",
+            rule_value="hello",
+            send_text_search_regex=r"hello (\w+)",
+            send_text_template="hello {group1} {missing}",
+        )
+
+        assert config.get_send_text("hello world") == "hello world {missing}"
+
+    def test_get_send_text_with_template_falls_back_when_regex_does_not_match(self):
+        config = MatchConfig(
+            chat_id=123,
+            rule="exact",
+            rule_value="hello",
+            default_send_text="default text",
+            send_text_search_regex=r"hello (\w+)",
+            send_text_template="hello {group1}",
+        )
+
+        assert config.get_send_text("goodbye world") == "default text"
+
+    def test_get_send_text_with_template_without_regex_can_use_message_text(self):
+        config = MatchConfig(
+            chat_id=123,
+            rule="exact",
+            rule_value="hello",
+            send_text_template="收到：{message_text}",
+        )
+
+        assert config.get_send_text("hello world") == "收到：hello world"
+
     def test_match_combines_chat_user_and_text(self):
         config = MatchConfig(
             chat_id="@target_chat",

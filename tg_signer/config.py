@@ -28,6 +28,11 @@ from typing_extensions import Self, TypeAlias
 ChatId: TypeAlias = Union[int, str]
 
 
+class SafeFormatDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
 def normalize_chat_username(value: str) -> str:
     return value.strip().lstrip("@").lower()
 
@@ -498,6 +503,7 @@ class MatchConfig(BaseJSONConfig):
     ai_reply: bool = False  # 是否使用AI回复
     ai_prompt: Optional[str] = None
     send_text_search_regex: Optional[str] = None  # 用正则表达式从消息中提取发送内容
+    send_text_template: Optional[str] = None  # 提取发送内容后的文本模板
     delete_after: Optional[int] = None
     ignore_case: bool = True  # 忽略大小写
     forward_to_chat_id: Optional[ChatId] = None  # 转发消息到该聊天，默认为消息来源
@@ -522,7 +528,8 @@ class MatchConfig(BaseJSONConfig):
     def __str__(self):
         return (
             f"{self.__class__.__name__}(chat_id={self.chat_id}, rule={self.rule}, rule_value={self.rule_value}),"
-            f" default_send_text={self.default_send_text}, send_text_search_regex={self.send_text_search_regex}"
+            f" default_send_text={self.default_send_text}, send_text_search_regex={self.send_text_search_regex},"
+            f" send_text_template={self.send_text_template}"
         )
 
     @property
@@ -588,18 +595,40 @@ class MatchConfig(BaseJSONConfig):
             self.match_user(message) and self.match_text(message.text)
         )
 
+    def _render_send_text_template(self, text: str, match: Optional[re.Match]) -> str:
+        mapping: dict[str, Any] = SafeFormatDict(
+            {
+                "message_text": text,
+                "text": text,
+            }
+        )
+        if match:
+            mapping["match"] = match.group(0)
+            mapping["group0"] = match.group(0)
+            for index, value in enumerate(match.groups(), start=1):
+                mapping[f"group{index}"] = value or ""
+            mapping.update(
+                {key: value or "" for key, value in match.groupdict().items()}
+            )
+            mapping["extracted"] = mapping.get("group1", "")
+        return self.send_text_template.format_map(mapping)
+
     def get_send_text(self, text: str) -> str:
         send_text = self.default_send_text
         if self.send_text_search_regex:
             m = re.search(self.send_text_search_regex, text)
             if not m:
                 return send_text
+            if self.send_text_template:
+                return self._render_send_text_template(text, m)
             try:
                 send_text = m.group(1)
             except IndexError as e:
                 raise ValueError(
                     f"{self}: 消息文本: 「{text}」匹配成功但未能捕获关键词, 请检查正则表达式"
                 ) from e
+        elif self.send_text_template:
+            send_text = self._render_send_text_template(text, None)
         return send_text
 
     @property

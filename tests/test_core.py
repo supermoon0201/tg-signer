@@ -2,6 +2,7 @@ import asyncio
 import json
 import pathlib
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,9 +12,11 @@ from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from tg_signer.config import (
+    ChooseOptionByImageAction,
     ChooseOptionByTextAction,
     ClickKeyboardByTextAction,
     OpenWebAppByTextAction,
+    ReplyByCalculationProblemAction,
     SendTextAction,
     SignChatV3,
     SignConfigV3,
@@ -1407,6 +1410,188 @@ async def test_wait_for_uses_resolved_route_key_for_username(signer_factory):
 
     signer._click_keyboard_by_text.assert_awaited_once_with(chat.actions[0], message)
     assert signer.context.chat_messages[resolved_key][99] is None
+
+
+@pytest.mark.asyncio
+async def test_reply_by_calculation_problem_clicks_caption_inline_answer(
+    signer_factory,
+):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="8"))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.send_message = AsyncMock(return_value=None)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="17 - 9 = ?",
+        chat=SimpleNamespace(id=123),
+        message_thread_id=1,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("8", callback_data="answer:8"),
+                    InlineKeyboardButton("17", callback_data="answer:17"),
+                ]
+            ]
+        ),
+    )
+
+    ok = await signer._reply_by_calculation_problem(
+        ReplyByCalculationProblemAction(),
+        message,
+    )
+
+    assert ok is True
+    ai_tools.calculate_problem.assert_awaited_once()
+    query = ai_tools.calculate_problem.await_args.args[0]
+    assert "17 - 9 = ?" in query
+    assert "可选答案" in query
+    assert '"8"' in query
+    assert '"17"' in query
+    signer.request_callback_answer.assert_awaited_once_with(
+        signer.app,
+        123,
+        99,
+        "answer:8",
+    )
+    signer.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_by_calculation_problem_clicks_non_numeric_inline_answer(
+    signer_factory,
+):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="选项B"))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.send_message = AsyncMock(return_value=None)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="请选择正确答案",
+        chat=SimpleNamespace(id=123),
+        message_thread_id=1,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("选项A", callback_data="answer:a"),
+                    InlineKeyboardButton("选项B", callback_data="answer:b"),
+                ]
+            ]
+        ),
+    )
+
+    ok = await signer._reply_by_calculation_problem(
+        ReplyByCalculationProblemAction(),
+        message,
+    )
+
+    assert ok is True
+    query = ai_tools.calculate_problem.await_args.args[0]
+    assert '"选项A"' in query
+    assert '"选项B"' in query
+    signer.request_callback_answer.assert_awaited_once_with(
+        signer.app,
+        123,
+        99,
+        "answer:b",
+    )
+    signer.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_by_calculation_problem_sends_caption_answer_without_keyboard(
+    signer_factory,
+):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(calculate_problem=AsyncMock(return_value="8"))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    signer.send_message = AsyncMock(return_value=None)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="17 - 9 = ?",
+        chat=SimpleNamespace(id=123),
+        message_thread_id=1,
+        reply_markup=None,
+    )
+
+    ok = await signer._reply_by_calculation_problem(
+        ReplyByCalculationProblemAction(),
+        message,
+    )
+
+    assert ok is True
+    ai_tools.calculate_problem.assert_awaited_once_with("17 - 9 = ?")
+    signer.send_message.assert_awaited_once_with(123, "8", message_thread_id=1)
+    signer.request_callback_answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_image_uses_caption_and_option_index(signer_factory):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=1))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="请点击图中的物品",
+        chat=SimpleNamespace(id=123),
+        photo=SimpleNamespace(file_id="photo-id"),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("手机", callback_data="answer:phone"),
+                    InlineKeyboardButton("电视盒子", callback_data="answer:tv"),
+                ]
+            ]
+        ),
+    )
+
+    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+
+    assert ok is True
+    signer.app.download_media.assert_awaited_once_with("photo-id", in_memory=True)
+    ai_tools.choose_option_by_image.assert_awaited_once_with(
+        b"image-bytes",
+        "请点击图中的物品",
+        [(0, "手机"), (1, "电视盒子")],
+    )
+    signer.request_callback_answer.assert_awaited_once_with(
+        signer.app,
+        123,
+        99,
+        "answer:tv",
+    )
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_image_rejects_invalid_option_index(signer_factory):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=9))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    message = SimpleNamespace(
+        id=99,
+        text=None,
+        caption="请点击图中的物品",
+        chat=SimpleNamespace(id=123),
+        photo=SimpleNamespace(file_id="photo-id"),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("手机", callback_data="answer:phone")]]
+        ),
+    )
+
+    ok = await signer._choose_option_by_image(ChooseOptionByImageAction(), message)
+
+    assert ok is False
+    signer.request_callback_answer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

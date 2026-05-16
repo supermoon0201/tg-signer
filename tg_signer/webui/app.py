@@ -53,6 +53,7 @@ MONITOR_TEMPLATE: Dict[str, object] = {
             "ai_reply": False,
             "ai_prompt": None,
             "send_text_search_regex": None,
+            "send_text_template": None,
             "delete_after": None,
             "ignore_case": True,
             "forward_to_chat_id": None,

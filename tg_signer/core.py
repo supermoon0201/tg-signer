@@ -163,6 +163,25 @@ def readable_message(message: Message):
     return s
 
 
+def _get_message_text(message: Message) -> str:
+    return getattr(message, "text", None) or getattr(message, "caption", None) or ""
+
+
+def _normalize_option_text(text: str) -> str:
+    return "".join(text.split())
+
+
+def _get_inline_keyboard_buttons(message: Message) -> list[InlineKeyboardButton]:
+    if not isinstance(getattr(message, "reply_markup", None), InlineKeyboardMarkup):
+        return []
+    return [
+        button
+        for row in message.reply_markup.inline_keyboard
+        for button in row
+        if button.text
+    ]
+
+
 def readable_chat(chat: Chat):
     type_ = CHAT_TYPE_LABELS.get(chat.type, "个人")
 
@@ -2207,11 +2226,43 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def _reply_by_calculation_problem(
         self, action: ReplyByCalculationProblemAction, message
     ):
-        if message.text:
+        text = _get_message_text(message)
+        if text:
             self.log("检测到文本回复，尝试调用大模型进行计算题回答")
-            self.log(f"问题: \n{message.text}")
-            answer = await self.get_ai_tools().calculate_problem(message.text)
+            self.log(f"问题: \n{text}")
+            option_to_btn = {}
+            buttons = _get_inline_keyboard_buttons(message)
+            if buttons:
+                option_to_btn = {
+                    _normalize_option_text(btn.text): btn for btn in buttons
+                }
+            query = text
+            if option_to_btn:
+                options = [btn.text for btn in option_to_btn.values()]
+                query = (
+                    f"{text}\n\n"
+                    f"可选答案：{json.dumps(options, ensure_ascii=False)}\n"
+                    "请只从可选答案中选择最匹配的一项，并原样回复该选项文本。"
+                )
+            answer = await self.get_ai_tools().calculate_problem(query)
+            answer = answer.strip()
             self.log(f"回答为: {answer}")
+            if option_to_btn:
+                target_btn = option_to_btn.get(_normalize_option_text(answer))
+                if not target_btn:
+                    self.log("未找到匹配的按钮", level="WARNING")
+                    return False
+                if not target_btn.callback_data:
+                    self.log("匹配的按钮没有 callback_data，无法点击", level="WARNING")
+                    return False
+                self.log(f"点击按钮: {target_btn.text}")
+                await self.request_callback_answer(
+                    self.app,
+                    message.chat.id,
+                    message.id,
+                    target_btn.callback_data,
+                )
+                return True
             await self.send_message(
                 message.chat.id,
                 answer,
@@ -2221,35 +2272,36 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return False
 
     async def _choose_option_by_image(self, action: ChooseOptionByImageAction, message):
-        if reply_markup := message.reply_markup:
-            if isinstance(reply_markup, InlineKeyboardMarkup) and message.photo:
-                flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
-                option_to_btn = {btn.text: btn for btn in flat_buttons if btn.text}
-                self.log("检测到图片，尝试调用大模型进行图片识别并选择选项")
-                image_buffer: BinaryIO = await self.app.download_media(
-                    message.photo.file_id, in_memory=True
-                )
-                image_buffer.seek(0)
-                image_bytes = image_buffer.read()
-                options = list(option_to_btn)
-                result_index = await self.get_ai_tools().choose_option_by_image(
-                    image_bytes,
-                    "选择正确的选项",
-                    list(enumerate(options)),
-                )
-                result = options[result_index]
-                self.log(f"选择结果为: {result}")
-                target_btn = option_to_btn.get(result.strip())
-                if not target_btn:
-                    self.log("未找到匹配的按钮", level="WARNING")
-                    return False
-                await self.request_callback_answer(
-                    self.app,
-                    message.chat.id,
-                    message.id,
-                    target_btn.callback_data,
-                )
-                return True
+        buttons = _get_inline_keyboard_buttons(message)
+        if buttons and message.photo:
+            options = [btn.text for btn in buttons]
+            self.log("检测到图片，尝试调用大模型进行图片识别并选择选项")
+            image_buffer: BinaryIO = await self.app.download_media(
+                message.photo.file_id, in_memory=True
+            )
+            image_buffer.seek(0)
+            image_bytes = image_buffer.read()
+            query = _get_message_text(message) or "选择正确的选项"
+            result_index = await self.get_ai_tools().choose_option_by_image(
+                image_bytes,
+                query,
+                list(enumerate(options)),
+            )
+            if result_index < 0 or result_index >= len(buttons):
+                self.log("图片识别返回的选项序号无效", level="WARNING")
+                return False
+            target_btn = buttons[result_index]
+            self.log(f"选择结果为: {target_btn.text}")
+            if not target_btn.callback_data:
+                self.log("匹配的按钮没有 callback_data，无法点击", level="WARNING")
+                return False
+            await self.request_callback_answer(
+                self.app,
+                message.chat.id,
+                message.id,
+                target_btn.callback_data,
+            )
+            return True
         return False
 
     async def _choose_option_by_text(self, action: ChooseOptionByTextAction, message):
@@ -3126,8 +3178,21 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
             send_text_search_regex = (
                 input_("从消息中提取发送文本的正则表达式（不需要则直接回车）: ") or None
             )
+        send_text_template = None
+        if send_text_search_regex:
+            send_text_template = (
+                input_(
+                    "发送文本模板（可用{extracted}/{group1}/命名分组；不需要则直接回车）: "
+                )
+                or None
+            )
 
-        if default_send_text or ai_reply or send_text_search_regex:
+        if (
+            default_send_text
+            or ai_reply
+            or send_text_search_regex
+            or send_text_template
+        ):
             delete_after = (
                 input_(
                     "发送消息后等待N秒进行删除（'0'表示立即删除, 不需要删除直接回车）， N: "
@@ -3139,8 +3204,11 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
             forward_to_chat_id = (
                 input_("转发消息到该聊天ID，默认为消息来源：")
             ).strip()
-            if forward_to_chat_id and not forward_to_chat_id.startswith("@"):
-                forward_to_chat_id = int(forward_to_chat_id)
+            if forward_to_chat_id:
+                if not forward_to_chat_id.startswith("@"):
+                    forward_to_chat_id = int(forward_to_chat_id)
+            else:
+                forward_to_chat_id = None
         else:
             delete_after = None
             forward_to_chat_id = None
@@ -3192,6 +3260,7 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
                 "ai_reply": ai_reply,
                 "ai_prompt": ai_prompt,
                 "send_text_search_regex": send_text_search_regex,
+                "send_text_template": send_text_template,
                 "delete_after": delete_after,
                 "forward_to_chat_id": forward_to_chat_id,
                 "push_via_server_chan": push_via_server_chan,
@@ -3301,7 +3370,7 @@ class UserMonitor(BaseUserWorker[MonitorConfig]):
                             f"匹配到监控项：{match_cfg.chat_id}",
                             f"消息内容为:\n\n{message.text}",
                         )
-            except IndexError as e:
+            except (IndexError, ValueError) as e:
                 logger.exception(e)
 
     async def get_send_text(self, match_cfg: MatchConfig, message: Message) -> str:
