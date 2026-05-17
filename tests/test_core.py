@@ -1026,6 +1026,103 @@ async def test_choose_option_by_text_clicks_selected_button(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    first_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=(
+            "请依次点击下方按钮补全诗句：\n"
+            "离恨远萦杨柳，梦魂░绕░花。\n"
+            "出自：刘迎《乌夜啼·离恨远萦杨柳》"
+        ),
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("长", callback_data="a"),
+                    InlineKeyboardButton("梨", callback_data="b"),
+                ]
+            ]
+        ),
+    )
+    second_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="请继续点击补全诗句：\n离恨远萦杨柳，梦魂长绕░花。",
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("梨", callback_data="b")]]
+        ),
+    )
+    final_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="✅ 验证通过：离恨远萦杨柳，梦魂长绕梨花。\n🎉 签到成功 | 3 牛币",
+        caption=None,
+        reply_markup=None,
+    )
+    signer.context.chat_messages[route_key][456] = first_message
+
+    class DummyAiTools:
+        def __init__(self):
+            self.calls = 0
+
+        async def choose_option_by_text(self, query, options):
+            self.calls += 1
+            if self.calls == 1:
+                assert "梦魂░绕░花" in query
+                assert [text for _, text in options] == ["长", "梨"]
+                return 0
+            assert "梦魂长绕░花" in query
+            assert [text for _, text in options] == ["梨"]
+            return 0
+
+    ai_tools = DummyAiTools()
+    callback_calls = []
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        if len(callback_calls) == 1:
+            signer.context.chat_messages[route_key][456] = second_message
+            return BotCallbackAnswer(
+                cache_time=0,
+                alert=False,
+                message="已选：长，请继续",
+            )
+        signer.context.chat_messages[route_key][456] = final_message
+        return BotCallbackAnswer(
+            cache_time=0,
+            alert=False,
+            message="签到成功！获得 3 牛币",
+        )
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "get_ai_tools", lambda: ai_tools)
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._choose_option_by_text(ChooseOptionByTextAction(), first_message)
+
+    assert ok is True
+    assert callback_calls == [(123, 456, "a"), (123, 456, "b")]
+
+
+@pytest.mark.asyncio
 async def test_open_webapp_by_text_uses_button_and_runs_page_action(
     monkeypatch, tmp_path
 ):

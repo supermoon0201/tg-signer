@@ -1478,17 +1478,22 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             text = text.replace(ch, "")
         return "".join(text.split()).lower()
 
+    def _normalized_text_contains_any(
+        self, normalized_text: str, keywords: tuple[str, ...] | list[str]
+    ) -> bool:
+        return any(
+            self._normalize_match_text(keyword) in normalized_text
+            for keyword in keywords
+            if keyword
+        )
+
     def _matches_success_text(
         self, action: ClickKeyboardByTextAction, normalized_text: str
     ) -> bool:
         keywords = [action.success_text] if action.success_text else []
         if not keywords:
             keywords = list(self._DEFAULT_REPEAT_SUCCESS_KEYWORDS)
-        return any(
-            self._normalize_match_text(keyword) in normalized_text
-            for keyword in keywords
-            if keyword
-        )
+        return self._normalized_text_contains_any(normalized_text, keywords)
 
     def _matches_done_text(
         self, action: ClickKeyboardByTextAction, normalized_text: str
@@ -1496,11 +1501,38 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         keywords = [action.already_done_text] if action.already_done_text else []
         if not keywords:
             keywords = list(self._DEFAULT_REPEAT_DONE_KEYWORDS)
-        return any(
-            self._normalize_match_text(keyword) in normalized_text
-            for keyword in keywords
-            if keyword
+        return self._normalized_text_contains_any(normalized_text, keywords)
+
+    def _count_text_choice_placeholders(self, text: str) -> int:
+        return sum(text.count(ch) for ch in ("░", "□", "▢", "▁", "_"))
+
+    def _has_terminal_sign_text(self, text: Optional[str]) -> bool:
+        normalized_text = self._normalize_match_text(text)
+        if not normalized_text:
+            return False
+        return self._normalized_text_contains_any(
+            normalized_text,
+            self._DEFAULT_REPEAT_SUCCESS_KEYWORDS + self._DEFAULT_REPEAT_DONE_KEYWORDS,
         )
+
+    async def _get_latest_text_choice_message(
+        self, message: Message
+    ) -> Optional[Message]:
+        route_key = self.get_route_key(
+            message.chat.id,
+            getattr(message, "message_thread_id", None),
+        )
+        cached = self.context.chat_messages.get(route_key, {}).get(message.id)
+        if cached:
+            return cached
+        try:
+            refreshed = await self._call_telegram_api(
+                "messages.GetMessages",
+                lambda: self.app.get_messages(message.chat.id, message.id),
+            )
+        except Exception:
+            return None
+        return refreshed if getattr(refreshed, "id", None) == message.id else None
 
     def _callback_answer_matches_terminal_state(
         self, action: ClickKeyboardByTextAction, answer
@@ -2306,42 +2338,71 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     async def _choose_option_by_text(self, action: ChooseOptionByTextAction, message):
         del action
-        reply_markup = getattr(message, "reply_markup", None)
-        if not isinstance(reply_markup, InlineKeyboardMarkup):
-            return False
+        current_message = message
 
-        prompt_text = getattr(message, "text", None) or getattr(
-            message, "caption", None
-        )
-        if not prompt_text:
-            return False
+        for _ in range(6):
+            reply_markup = getattr(current_message, "reply_markup", None)
+            if not isinstance(reply_markup, InlineKeyboardMarkup):
+                return self._has_terminal_sign_text(
+                    self._message_match_text(current_message)
+                )
 
-        flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
-        option_to_btn = {
-            btn.text: btn for btn in flat_buttons if btn.text and btn.callback_data
-        }
-        if not option_to_btn:
-            return False
+            prompt_text = getattr(current_message, "text", None) or getattr(
+                current_message, "caption", None
+            )
+            if not prompt_text:
+                return False
 
-        self.log("检测到文本题面和选项按钮，尝试调用大模型选择选项")
-        options = list(option_to_btn)
-        result_index = await self.get_ai_tools().choose_option_by_text(
-            prompt_text,
-            list(enumerate(options)),
-        )
-        result = options[result_index]
-        self.log(f"文本题面选择结果为: {result}")
-        target_btn = option_to_btn.get(result.strip())
-        if not target_btn:
-            self.log("未找到匹配的按钮", level="WARNING")
-            return False
-        await self.request_callback_answer(
-            self.app,
-            message.chat.id,
-            message.id,
-            target_btn.callback_data,
-        )
-        return True
+            flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
+            option_to_btn = {
+                btn.text: btn for btn in flat_buttons if btn.text and btn.callback_data
+            }
+            if not option_to_btn:
+                return self._has_terminal_sign_text(
+                    self._message_match_text(current_message)
+                )
+
+            self.log("检测到文本题面和选项按钮，尝试调用大模型选择选项")
+            options = list(option_to_btn)
+            placeholder_count = self._count_text_choice_placeholders(prompt_text)
+            result_index = await self.get_ai_tools().choose_option_by_text(
+                prompt_text,
+                list(enumerate(options)),
+            )
+            result = options[result_index]
+            self.log(f"文本题面选择结果为: {result}")
+            target_btn = option_to_btn.get(result.strip())
+            if not target_btn:
+                self.log("未找到匹配的按钮", level="WARNING")
+                return False
+
+            answer = await self.request_callback_answer(
+                self.app,
+                current_message.chat.id,
+                current_message.id,
+                target_btn.callback_data,
+            )
+            if self._has_terminal_sign_text(getattr(answer, "message", None)):
+                return True
+
+            await asyncio.sleep(0.5)
+            latest_message = await self._get_latest_text_choice_message(current_message)
+            if latest_message is None:
+                return placeholder_count <= 1
+
+            latest_text = self._message_match_text(latest_message)
+            if self._has_terminal_sign_text(latest_text):
+                return True
+
+            latest_placeholder_count = self._count_text_choice_placeholders(latest_text)
+            current_message = latest_message
+            if latest_placeholder_count == 0:
+                return True
+            if latest_placeholder_count >= placeholder_count:
+                return False
+
+        self.log("文本题面选择超过最大重试次数", level="WARNING")
+        return False
 
     async def _choose_option_by_gif(
         self,

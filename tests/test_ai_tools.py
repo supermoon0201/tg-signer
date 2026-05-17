@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, UnidentifiedImageError
 
-from tg_signer.ai_tools import AITools
+from tg_signer.ai_tools import AITools, get_openai_client
 
 
 class _FakeCompletions:
@@ -23,6 +23,69 @@ class _FakeCompletions:
 class _FakeClient:
     def __init__(self):
         self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+
+@pytest.mark.asyncio
+async def test_get_openai_client_falls_back_to_httpx_when_openai_import_breaks(
+    monkeypatch,
+):
+    calls = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": '{"option": 1, "reason": "fallback ok"}'}}
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            calls["init"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json, headers):
+            calls["post"] = {
+                "url": url,
+                "json": json,
+                "headers": headers,
+            }
+            return _FakeResponse()
+
+    original_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ModuleNotFoundError("broken openai install")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr("tg_signer.ai_tools.httpx.AsyncClient", _FakeAsyncClient)
+
+    client = get_openai_client(
+        api_key="test-key",
+        base_url="https://example.com/v1",
+    )
+    completion = await client.chat.completions.create(
+        model="demo-model",
+        messages=[{"role": "user", "content": "hello"}],
+        response_format={"type": "json_object"},
+    )
+
+    assert completion.choices[0].message.content == (
+        '{"option": 1, "reason": "fallback ok"}'
+    )
+    assert calls["init"]["base_url"] == "https://example.com/v1"
+    assert calls["post"]["url"] == "/chat/completions"
+    assert calls["post"]["headers"]["Authorization"] == "Bearer test-key"
 
 
 @pytest.mark.asyncio

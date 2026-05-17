@@ -2,8 +2,10 @@ import base64
 import json
 import os
 import pathlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Union
 
+import httpx
 import json_repair
 from pydantic import TypeAdapter
 from typing_extensions import Optional, Required, TypedDict
@@ -18,6 +20,49 @@ DEFAULT_MODEL = "gpt-4o"
 
 def encode_image(image: bytes):
     return base64.b64encode(image).decode("utf-8")
+
+
+class _CompatAsyncCompletions:
+    def __init__(self, api_key: str, base_url: str = None, timeout: int = 60):
+        self.api_key = api_key
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.timeout = timeout
+
+    async def create(self, **kwargs):
+        payload = {key: value for key, value in kwargs.items() if value is not None}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+        ) as client:
+            response = await client.post(
+                "/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        choices = []
+        for choice in data.get("choices", []):
+            message = choice.get("message") or {}
+            choices.append(
+                SimpleNamespace(
+                    message=SimpleNamespace(content=message.get("content", ""))
+                )
+            )
+        return SimpleNamespace(choices=choices, data=data)
+
+
+class _CompatAsyncOpenAI:
+    def __init__(self, api_key: str, base_url: str = None, **kwargs):
+        self.chat = SimpleNamespace(
+            completions=_CompatAsyncCompletions(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=kwargs.get("timeout", 60),
+            )
+        )
 
 
 class OpenAIConfig(TypedDict, total=False):
@@ -93,12 +138,15 @@ def get_openai_client(
     base_url: str = None,
     **kwargs,
 ) -> Optional["AsyncOpenAI"]:
-    from openai import AsyncOpenAI, OpenAIError
+    try:
+        from openai import AsyncOpenAI, OpenAIError
+    except Exception:
+        return _CompatAsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
     try:
         return AsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
-    except OpenAIError:
-        return None
+    except (OpenAIError, ModuleNotFoundError, ImportError):
+        return _CompatAsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
 class AITools:
