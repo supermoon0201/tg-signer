@@ -984,6 +984,110 @@ async def test_click_keyboard_by_text_stops_on_success_message(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_click_keyboard_by_text_non_repeat_handles_timeout_with_success_message(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=None,
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", callback_data="sign")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][message.id] = message
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        del args, kwargs
+        signer.context.chat_messages[route_key][789] = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            id=789,
+            message_thread_id=None,
+            text="🎉 签到成功 | 11 OK币\n💴 当前持有 | 657 OK币\n⏳ 签到日期 | 2026-05-18",
+            caption=None,
+            reply_markup=None,
+        )
+        return None
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="🎯 签到"),
+        message,
+    )
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_non_repeat_handles_timeout_with_message_edit(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=None,
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("👥个人信息", callback_data="profile")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][message.id] = message
+
+    async def fake_request_callback_answer(*args, **kwargs):
+        del args, kwargs
+        signer.context.chat_messages[route_key][456] = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            id=456,
+            message_thread_id=None,
+            text="用户信息",
+            caption=None,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🎊签到", callback_data="sign")]]
+            ),
+        )
+        return None
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="👥个人信息"),
+        message,
+    )
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
 async def test_choose_option_by_text_clicks_selected_button(monkeypatch, tmp_path):
     signer = UserSigner(
         task_name="task",

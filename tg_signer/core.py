@@ -1351,6 +1351,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if not found:
             return False
 
+        route_key = self.get_route_key(
+            message.chat.id,
+            getattr(message, "message_thread_id", None),
+        )
+
         if not action.repeat_until_complete:
             btn = found[1]
             self.log(f"点击按钮: {btn.text}")
@@ -1360,12 +1365,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 message.id,
                 btn.callback_data,
             )
-            return answer is not None
+            if answer is not None:
+                return True
+            terminal = await self._wait_for_click_completion_state(route_key, action, 1.0)
+            return bool(terminal)
 
-        route_key = self.get_route_key(
-            message.chat.id,
-            getattr(message, "message_thread_id", None),
-        )
         clicked = False
         start = time.perf_counter()
 
