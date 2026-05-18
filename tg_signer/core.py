@@ -40,6 +40,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     Message,
     Object,
+    ReplyKeyboardMarkup,
     User,
 )
 
@@ -1522,17 +1523,22 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             message.chat.id,
             getattr(message, "message_thread_id", None),
         )
-        cached = self.context.chat_messages.get(route_key, {}).get(message.id)
-        if cached:
-            return cached
         try:
             refreshed = await self._call_telegram_api(
                 "messages.GetMessages",
                 lambda: self.app.get_messages(message.chat.id, message.id),
             )
         except Exception:
-            return None
-        return refreshed if getattr(refreshed, "id", None) == message.id else None
+            refreshed = None
+
+        if getattr(refreshed, "id", None) == message.id:
+            self.context.chat_messages[route_key][message.id] = refreshed
+            return refreshed
+
+        cached = self.context.chat_messages.get(route_key, {}).get(message.id)
+        if cached:
+            return cached
+        return None
 
     def _callback_answer_matches_terminal_state(
         self, action: ClickKeyboardByTextAction, answer
@@ -2342,7 +2348,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         for _ in range(6):
             reply_markup = getattr(current_message, "reply_markup", None)
-            if not isinstance(reply_markup, InlineKeyboardMarkup):
+            if not isinstance(
+                reply_markup, (InlineKeyboardMarkup, ReplyKeyboardMarkup)
+            ):
                 return self._has_terminal_sign_text(
                     self._message_match_text(current_message)
                 )
@@ -2353,10 +2361,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             if not prompt_text:
                 return False
 
-            flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
-            option_to_btn = {
-                btn.text: btn for btn in flat_buttons if btn.text and btn.callback_data
-            }
+            if isinstance(reply_markup, InlineKeyboardMarkup):
+                flat_buttons = (
+                    b for row in reply_markup.inline_keyboard for b in row
+                )
+                option_to_btn = {
+                    btn.text: btn
+                    for btn in flat_buttons
+                    if btn.text and btn.callback_data
+                }
+            else:
+                flat_buttons = (b for row in reply_markup.keyboard for b in row)
+                option_to_btn = {btn.text: btn for btn in flat_buttons if btn.text}
             if not option_to_btn:
                 return self._has_terminal_sign_text(
                     self._message_match_text(current_message)
@@ -2376,14 +2392,23 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.log("未找到匹配的按钮", level="WARNING")
                 return False
 
-            answer = await self.request_callback_answer(
-                self.app,
-                current_message.chat.id,
-                current_message.id,
-                target_btn.callback_data,
-            )
-            if self._has_terminal_sign_text(getattr(answer, "message", None)):
-                return True
+            if isinstance(target_btn, InlineKeyboardButton):
+                answer = await self.request_callback_answer(
+                    self.app,
+                    current_message.chat.id,
+                    current_message.id,
+                    target_btn.callback_data,
+                )
+                if self._has_terminal_sign_text(getattr(answer, "message", None)):
+                    return True
+            else:
+                await self.send_message(
+                    current_message.chat.id,
+                    target_btn.text,
+                    message_thread_id=getattr(
+                        current_message, "message_thread_id", None
+                    ),
+                )
 
             await asyncio.sleep(0.5)
             latest_message = await self._get_latest_text_choice_message(current_message)

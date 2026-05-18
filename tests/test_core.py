@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 
 from tg_signer.config import (
     ChooseOptionByImageAction,
@@ -1120,6 +1126,191 @@ async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp
 
     assert ok is True
     assert callback_calls == [(123, 456, "a"), (123, 456, "b")]
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_text_fetches_latest_edited_message(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    first_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=(
+            "请依次点击下方按钮补全诗句：\n"
+            "草木也知░，韶░竟白头。\n"
+            "出自：曹雪芹《唐多令·柳絮》"
+        ),
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("映", callback_data="a"),
+                    InlineKeyboardButton("华", callback_data="b"),
+                    InlineKeyboardButton("愁", callback_data="c"),
+                ]
+            ]
+        ),
+    )
+    second_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="请继续点击补全诗句：\n草木也知愁，韶░竟白头。",
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("映", callback_data="a"),
+                    InlineKeyboardButton("华", callback_data="b"),
+                ]
+            ]
+        ),
+    )
+    final_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="✅ 验证通过：草木也知愁，韶华竟白头。\n🎉 签到成功 | 3 牛币",
+        caption=None,
+        reply_markup=None,
+    )
+    signer.context.chat_messages[route_key][456] = first_message
+
+    class DummyAiTools:
+        def __init__(self):
+            self.calls = 0
+
+        async def choose_option_by_text(self, query, options):
+            self.calls += 1
+            if self.calls == 1:
+                assert "草木也知░，韶░竟白头" in query
+                assert [text for _, text in options] == ["映", "华", "愁"]
+                return 2
+            assert "草木也知愁，韶░竟白头" in query
+            assert [text for _, text in options] == ["映", "华"]
+            return 1
+
+    ai_tools = DummyAiTools()
+    callback_calls = []
+    latest_message = first_message
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        nonlocal latest_message
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        if len(callback_calls) == 1:
+            latest_message = second_message
+            return BotCallbackAnswer(
+                cache_time=0,
+                alert=False,
+                message="已选：愁，请继续",
+            )
+        latest_message = final_message
+        return BotCallbackAnswer(
+            cache_time=0,
+            alert=False,
+            message="已选：华，验证中",
+        )
+
+    async def fake_get_messages(chat_id, message_id):
+        assert chat_id == 123
+        assert message_id == 456
+        return latest_message
+
+    async def fake_sleep(_seconds):
+        return None
+
+    async def fake_call_telegram_api(_name, func):
+        return await func()
+
+    monkeypatch.setattr(signer, "get_ai_tools", lambda: ai_tools)
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr(signer.app, "get_messages", fake_get_messages)
+    monkeypatch.setattr(signer, "_call_telegram_api", fake_call_telegram_api)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._choose_option_by_text(ChooseOptionByTextAction(), first_message)
+
+    assert ok is True
+    assert ai_tools.calls == 2
+    assert callback_calls == [(123, 456, "c"), (123, 456, "b")]
+    assert signer.context.chat_messages[route_key][456] is not first_message
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_text_sends_reply_keyboard_text(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    first_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="请继续点击补全全诗句：\n草木也知愁，韶华竟白头。",
+        caption=None,
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton("映"), KeyboardButton("华")],
+                [KeyboardButton("尘"), KeyboardButton("从")],
+            ],
+            resize_keyboard=True,
+        ),
+    )
+    final_message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=789,
+        message_thread_id=None,
+        text="✅ 验证通过\n🎉 签到成功 | 3 牛币",
+        caption=None,
+        reply_markup=None,
+    )
+    signer.context.chat_messages[route_key][456] = first_message
+
+    class DummyAiTools:
+        async def choose_option_by_text(self, query, options):
+            assert "草木也知愁" in query
+            assert [text for _, text in options] == ["映", "华", "尘", "从"]
+            return 1
+
+    send_calls = []
+
+    async def fake_send_message(
+        chat_id, text, delete_after=None, message_thread_id=None, **kwargs
+    ):
+        del delete_after, kwargs
+        send_calls.append((chat_id, text, message_thread_id))
+        signer.context.chat_messages[route_key][789] = final_message
+        return None
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "get_ai_tools", lambda: DummyAiTools())
+    monkeypatch.setattr(signer, "send_message", fake_send_message)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._choose_option_by_text(ChooseOptionByTextAction(), first_message)
+
+    assert ok is True
+    assert send_calls == [(123, "华", None)]
 
 
 @pytest.mark.asyncio
