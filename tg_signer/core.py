@@ -1503,9 +1503,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def _matches_done_text(
         self, action: ClickKeyboardByTextAction, normalized_text: str
     ) -> bool:
-        keywords = [action.already_done_text] if action.already_done_text else []
-        if not keywords:
-            keywords = list(self._DEFAULT_REPEAT_DONE_KEYWORDS)
+        # 作者: le.yang
+        # 保留自定义“已完成”关键词，同时追加内置兜底词，避免配置文案与真实弹窗
+        # 存在细微差异时触发重复点击。
+        keywords = []
+        if action.already_done_text:
+            keywords.append(action.already_done_text)
+        keywords.extend(self._DEFAULT_REPEAT_DONE_KEYWORDS)
         return self._normalized_text_contains_any(normalized_text, keywords)
 
     def _count_text_choice_placeholders(self, text: str) -> int:

@@ -1233,6 +1233,73 @@ async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_click_keyboard_by_text_uses_default_done_keywords_as_fallback(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text="用户面板",
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 数据存档", callback_data="sign")]]
+        ),
+    )
+    signer.context.chat_messages[route_key][456] = message
+    callback_calls = []
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        signer.context.chat_messages[route_key][456] = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            id=456,
+            message_thread_id=None,
+            text="用户面板",
+            caption=None,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🎯 数据存档", callback_data="sign")]]
+            ),
+        )
+        return BotCallbackAnswer(
+            cache_time=0,
+            alert=False,
+            message="⭕ 您今天已经签过到了！签到是无聊的活动哦。",
+        )
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(
+            text="🎯",
+            repeat_until_complete=True,
+            repeat_interval=0.8,
+            repeat_timeout=8.0,
+            success_text="签到成功",
+            already_done_text="今天已经签到过了",
+        ),
+        message,
+    )
+
+    assert ok is True
+    assert callback_calls == [(123, 456, "sign")]
+
+
+@pytest.mark.asyncio
 async def test_choose_option_by_text_fetches_latest_edited_message(
     monkeypatch, tmp_path
 ):
