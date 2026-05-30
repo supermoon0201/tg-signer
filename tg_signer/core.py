@@ -59,6 +59,7 @@ from tg_signer.config import (
     ReplyByCalculationProblemAction,
     SendDiceAction,
     SendTextAction,
+    SessionPanelCheckinAction,
     SignChatV3,
     SignConfigV3,
     SupportAction,
@@ -3023,6 +3024,184 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             return False
 
+    @staticmethod
+    def _dig_path(data: Any, dotted_path: str) -> Any:
+        """按点分路径从嵌套dict取值，任一层缺失返回 None。"""
+        cur = data
+        for part in dotted_path.split("."):
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(part)
+        return cur
+
+    async def _get_webapp_init_data(
+        self, bot_username: str
+    ) -> tuple[Optional[str], Optional[str]]:
+        """获取 bot 的 WebApp 菜单按钮 URL 与 initData(tgWebAppData)。"""
+        from urllib.parse import parse_qs, urlparse
+
+        from pyrogram.raw.functions.messages import RequestWebView
+        from pyrogram.raw.functions.users import GetFullUser
+
+        bot_peer = await self.app.resolve_peer(bot_username)
+        user_full = await self.app.invoke(GetFullUser(id=bot_peer))
+        if (
+            not user_full.full_user.bot_info
+            or not user_full.full_user.bot_info.menu_button
+        ):
+            self.log(f"Bot {bot_username} 没有菜单按钮", level="WARNING")
+            return None, None
+        menu_url = user_full.full_user.bot_info.menu_button.url
+        auth = await self.app.invoke(
+            RequestWebView(
+                peer=bot_peer, bot=bot_peer, platform="ios", url=menu_url
+            )
+        )
+        init_data = parse_qs(urlparse(auth.url).fragment).get("tgWebAppData", [""])[0]
+        return menu_url, init_data
+
+    async def _session_panel_checkin(
+        self, action: SessionPanelCheckinAction
+    ) -> bool:
+        """基于 session(cookie) 的面板接口签到。
+
+        流程: RequestWebView 取 initData -> POST auth_endpoint 换 session ->
+        GET profile_endpoint 预检是否已签 -> POST checkin_endpoint 签到。
+        """
+        from urllib.parse import urlparse
+
+        try:
+            menu_url, init_data = await self._get_webapp_init_data(
+                action.bot_username
+            )
+        except Exception as e:
+            self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
+            await self._send_session_panel_bark(
+                action, "失败", f"获取initData失败: {e}"
+            )
+            return False
+
+        if not init_data:
+            self.log("未能获取 initData，无法进行面板签到", level="WARNING")
+            return False
+
+        if action.api_base_url:
+            api_base = action.api_base_url
+        else:
+            parsed = urlparse(menu_url)
+            api_base = f"{parsed.scheme}://{parsed.netloc}"
+
+        # 面板接口通常校验请求来源，需伪装浏览器头，否则会 403「请求来源无效」
+        headers = {
+            "Origin": api_base,
+            "Referer": api_base + "/",
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Content-Type": "application/json",
+        }
+        if action.extra_headers:
+            headers.update(action.extra_headers)
+
+        return await self._run_session_panel_flow(action, api_base, init_data, headers)
+
+    async def _run_session_panel_flow(
+        self,
+        action: SessionPanelCheckinAction,
+        api_base: str,
+        init_data: str,
+        headers: dict,
+    ) -> bool:
+        async with httpx.AsyncClient(
+            base_url=api_base,
+            timeout=30.0,
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            # 1) 用 initData 换 session(cookie)
+            try:
+                auth_resp = await client.post(
+                    action.auth_endpoint,
+                    json={action.init_data_field: init_data},
+                )
+                auth_payload = auth_resp.json()
+            except Exception as e:
+                self.log(f"面板鉴权请求失败: {e}", level="ERROR")
+                await self._send_session_panel_bark(action, "失败", f"鉴权请求失败: {e}")
+                return False
+
+            if auth_payload.get(action.success_key) != action.success_value:
+                msg = auth_payload.get(action.message_key) if action.message_key else None
+                self.log(f"面板鉴权失败: {msg or auth_payload}", level="WARNING")
+                await self._send_session_panel_bark(
+                    action, "失败", f"鉴权失败: {msg or auth_payload}"
+                )
+                return False
+            self.log("面板鉴权成功，已获取会话")
+
+            # 2) 预检是否今日已签
+            if action.already_signed_path:
+                try:
+                    prof_resp = await client.get(action.profile_endpoint)
+                    prof_payload = prof_resp.json()
+                    already = self._dig_path(prof_payload, action.already_signed_path)
+                    if already is True:
+                        self.log("面板今日已签到，跳过")
+                        await self._send_session_panel_bark(
+                            action, "已签到", "面板今日已签到，跳过"
+                        )
+                        return True
+                except Exception as e:
+                    # 预检失败不阻断签到，继续尝试
+                    self.log(f"面板签到状态预检失败(忽略): {e}", level="WARNING")
+
+            # 3) 执行签到
+            try:
+                checkin_resp = await client.post(action.checkin_endpoint)
+                checkin_payload = checkin_resp.json()
+            except Exception as e:
+                self.log(f"面板签到请求失败: {e}", level="ERROR")
+                await self._send_session_panel_bark(action, "失败", f"签到请求失败: {e}")
+                return False
+
+            msg = (
+                checkin_payload.get(action.message_key)
+                if action.message_key
+                else None
+            )
+            if checkin_payload.get(action.success_key) == action.success_value:
+                self.log(f"面板签到成功: {msg or checkin_payload}")
+                await self._send_session_panel_bark(
+                    action, "成功", f"签到成功: {msg or checkin_payload}"
+                )
+                return True
+
+            self.log(f"面板签到失败: {msg or checkin_payload}", level="WARNING")
+            await self._send_session_panel_bark(
+                action, "失败", f"签到失败: {msg or checkin_payload}"
+            )
+            return False
+
+    async def _send_session_panel_bark(
+        self, action: SessionPanelCheckinAction, status: str, body: str
+    ) -> None:
+        if not action.bark_enabled:
+            return
+        bark_url = os.environ.get("BARK_URL")
+        if not bark_url:
+            self.log("未配置Bark URL（环境变量BARK_URL）", level="WARNING")
+            return
+        await bark_send(
+            bark_url=bark_url,
+            title=f"面板签到{status} - {action.bot_username}",
+            body=body,
+            sound=os.environ.get("BARK_SOUND"),
+            group=os.environ.get("BARK_GROUP"),
+        )
+
     async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=10):
         if isinstance(action, SendTextAction):
             return await self.send_message(
@@ -3040,6 +3219,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
         elif isinstance(action, WebViewCheckinAction):
             return await self._webview_checkin(action)
+        elif isinstance(action, SessionPanelCheckinAction):
+            return await self._session_panel_checkin(action)
 
         # 特殊处理GIF验证码场景：需要等待两条消息
         if isinstance(action, ChooseOptionByGifAction):

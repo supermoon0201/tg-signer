@@ -206,6 +206,7 @@ class SupportAction(int, Enum):
     CHOOSE_OPTION_BY_GIF = 7  # 根据GIF图片选择选项
     OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并点击页面按钮
     CHOOSE_OPTION_BY_TEXT = 9  # 根据文本题面选择选项
+    SESSION_PANEL_CHECKIN = 10  # 基于session(cookie)的面板接口签到
 
     @property
     def desc(self):
@@ -219,6 +220,7 @@ class SupportAction(int, Enum):
             SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
             SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
             SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面选择选项",
+            SupportAction.SESSION_PANEL_CHECKIN: "面板接口签到(session)",
         }[self]
 
 
@@ -329,6 +331,33 @@ class OpenWebAppByTextAction(SignAction):
     turnstile_retry_after_solve: bool = True  # 通过 Turnstile 后是否重试业务按钮
 
 
+class SessionPanelCheckinAction(SignAction):
+    """基于 session(cookie) 的面板接口签到。
+
+    适用于「先用 Telegram initData 换取会话，再以 cookie 调业务接口」的面板
+    （如娘口三三 zzmeb 面板）。与 WebViewCheckinAction(每请求带 X-Initdata、
+    判定 message=="Success") 的无状态契约不同，故独立成一个动作类型。
+    """
+
+    action: Literal[SupportAction.SESSION_PANEL_CHECKIN] = (
+        SupportAction.SESSION_PANEL_CHECKIN
+    )
+    bot_username: str  # bot 的用户名，用于获取 WebApp 菜单按钮与 initData
+    api_base_url: Optional[str] = None  # API 基础URL，留空则从菜单按钮URL推导
+    auth_endpoint: str = "/api/auth/telegram"  # 用 initData 换 session 的接口
+    profile_endpoint: str = "/api/user/profile"  # 查询用户资料(含已签状态)的接口
+    checkin_endpoint: str = "/api/user/checkin"  # 签到接口
+    init_data_field: str = "initData"  # auth 接口请求体中放置 initData 的字段名
+    already_signed_path: Optional[str] = (
+        "data.profile.checkedInToday"  # profile 响应中判定"今日已签"的点分路径，留空则不预检
+    )
+    success_key: str = "ok"  # 接口返回中判定成功的字段
+    success_value: Union[bool, int, str] = True  # 成功字段的期望值
+    message_key: Optional[str] = "message"  # 日志展示用的消息字段
+    extra_headers: Optional[dict] = None  # 额外请求头
+    bark_enabled: bool = False  # 是否启用 Bark 通知
+
+
 ActionT: TypeAlias = Union[
     SendTextAction,
     SendDiceAction,
@@ -339,6 +368,7 @@ ActionT: TypeAlias = Union[
     ChooseOptionByGifAction,
     WebViewCheckinAction,
     OpenWebAppByTextAction,
+    SessionPanelCheckinAction,
 ]
 
 

@@ -24,6 +24,7 @@ from tg_signer.config import (
     OpenWebAppByTextAction,
     ReplyByCalculationProblemAction,
     SendTextAction,
+    SessionPanelCheckinAction,
     SignChatV3,
     SignConfigV3,
     WebViewCheckinAction,
@@ -1791,7 +1792,7 @@ async def test_solve_twocaptcha_image(monkeypatch, tmp_path):
 
     import tg_signer.core as core
 
-    monkeypatch.setattr(core.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(core.asyncio, "sleep", fake_sleep)
 
     result = await signer._solve_twocaptcha_image(
@@ -2382,3 +2383,114 @@ async def test_auto_renew_emby_falls_back_to_page_on_retryable_api_failure(
     assert result["success"] is True
     assert result["method"] == "page"
     page_mock.assert_awaited_once()
+
+
+def _make_session_panel_signer(tmp_path, monkeypatch):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    async def fake_init_data(bot_username):
+        return "https://panel.example.com/", "query_id=abc&user=%7B%7D&hash=deadbeef"
+
+    monkeypatch.setattr(signer, "_get_webapp_init_data", fake_init_data)
+    return signer
+
+
+class _SessionPanelClient:
+    """记录调用并按端点返回预设响应的假 httpx 客户端。"""
+
+    def __init__(self, responses):
+        self._responses = responses
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def _resp(self, path):
+        payload = self._responses[path]
+        return SimpleNamespace(status_code=200, json=lambda: payload)
+
+    async def post(self, path, **kwargs):
+        self.calls.append(("POST", path, kwargs.get("json")))
+        return self._resp(path)
+
+    async def get(self, path, **kwargs):
+        self.calls.append(("GET", path, None))
+        return self._resp(path)
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_success(monkeypatch, tmp_path):
+    signer = _make_session_panel_signer(tmp_path, monkeypatch)
+    action = SessionPanelCheckinAction(bot_username="zzmeb_bot")
+
+    client = _SessionPanelClient(
+        {
+            "/api/auth/telegram": {"ok": True, "message": "授权成功"},
+            "/api/user/profile": {
+                "ok": True,
+                "data": {"profile": {"checkedInToday": False, "score": 63}},
+            },
+            "/api/user/checkin": {"ok": True, "message": "签到成功，+16 积分"},
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await signer._session_panel_checkin(action)
+
+    assert ok is True
+    paths = [(m, p) for m, p, _ in client.calls]
+    assert ("POST", "/api/auth/telegram") in paths
+    assert ("GET", "/api/user/profile") in paths
+    assert ("POST", "/api/user/checkin") in paths
+    # initData 应放入请求体的 initData 字段
+    auth_call = next(c for c in client.calls if c[1] == "/api/auth/telegram")
+    assert "initData" in auth_call[2]
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_skips_when_already_signed(monkeypatch, tmp_path):
+    signer = _make_session_panel_signer(tmp_path, monkeypatch)
+    action = SessionPanelCheckinAction(bot_username="zzmeb_bot")
+
+    client = _SessionPanelClient(
+        {
+            "/api/auth/telegram": {"ok": True, "message": "授权成功"},
+            "/api/user/profile": {
+                "ok": True,
+                "data": {"profile": {"checkedInToday": True, "score": 79}},
+            },
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await signer._session_panel_checkin(action)
+
+    assert ok is True
+    # 已签到时不应再调用 checkin 接口
+    assert all(p != "/api/user/checkin" for _, p, _ in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_fails_on_auth_error(monkeypatch, tmp_path):
+    signer = _make_session_panel_signer(tmp_path, monkeypatch)
+    action = SessionPanelCheckinAction(bot_username="zzmeb_bot")
+
+    client = _SessionPanelClient(
+        {"/api/auth/telegram": {"ok": False, "message": "请求来源无效"}}
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await signer._session_panel_checkin(action)
+
+    assert ok is False
+    # 鉴权失败后不应继续请求 profile/checkin
+    assert [p for _, p, _ in client.calls] == ["/api/auth/telegram"]
+
