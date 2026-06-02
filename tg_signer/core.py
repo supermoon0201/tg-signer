@@ -7,21 +7,11 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from datetime import time as dt_time
-from typing import (
-    Annotated,
-    Any,
-    Awaitable,
-    BinaryIO,
-    Callable,
-    Generic,
-    List,
-    Optional,
-    Type,
-    TypeVar,
-    Union,
-)
+from datetime import timedelta, timezone
+from typing import (Annotated, Any, Awaitable, BinaryIO, Callable, Generic,
+                    List, Optional, Type, TypeVar, Union)
 from urllib import parse
 
 import httpx
@@ -34,47 +24,30 @@ from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
 from pyrogram.storage import SQLiteStorage
-from pyrogram.types import (
-    Chat,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    Object,
-    ReplyKeyboardMarkup,
-    User,
-)
+from pyrogram.types import (Chat, InlineKeyboardButton, InlineKeyboardMarkup,
+                            Message, Object, ReplyKeyboardMarkup, User)
 
-from tg_signer.config import (
-    ActionT,
-    BaseJSONConfig,
-    ChatId,
-    ChooseOptionByGifAction,
-    ChooseOptionByImageAction,
-    ChooseOptionByTextAction,
-    ClickKeyboardByTextAction,
-    HttpCallback,
-    MatchConfig,
-    MonitorConfig,
-    OpenWebAppByTextAction,
-    ReplyByCalculationProblemAction,
-    SendDiceAction,
-    SendTextAction,
-    SessionPanelCheckinAction,
-    SignChatV3,
-    SignConfigV3,
-    SupportAction,
-    UDPForward,
-    WebViewCheckinAction,
-    parse_chat_id_or_username,
-)
+from tg_signer.config import (ActionT, BaseJSONConfig, ChatId,
+                              ChooseOptionByGifAction,
+                              ChooseOptionByImageAction,
+                              ChooseOptionByTextAction,
+                              ClickKeyboardByTextAction, HttpCallback,
+                              MatchConfig, MonitorConfig,
+                              OpenWebAppByTextAction,
+                              ReplyByCalculationProblemAction, SendDiceAction,
+                              SendTextAction, SessionPanelCheckinAction,
+                              SignChatV3, SignConfigV3, SupportAction,
+                              UDPForward, WebViewCheckinAction,
+                              parse_chat_id_or_username)
 
 from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.bark import bark_send
 from .notification.server_chan import sc_send
 from .sign_record_store import SignRecordStore
-from .utils import UserInput, get_now, print_to_user
+from .utils import UserInput, get_now
 from .utils import get_timezone as _get_timezone
+from .utils import print_to_user
 
 logger = logging.getLogger("tg-signer")
 
@@ -829,7 +802,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         "今天已经签过到了",
         "已经签到",
         "今日已签到",
-        "今朝已至",
         "签到是无聊的活动哦",
     )
 
@@ -1421,18 +1393,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def _get_click_completion_state(
         self, route_key: RouteKey, action: ClickKeyboardByTextAction
     ) -> Optional[bool]:
-        messages_dict = self.context.chat_messages.get(route_key, {})
-        for message in reversed(list(messages_dict.values())):
-            if not message:
-                continue
-            text = self._normalize_match_text(self._message_match_text(message))
-            if self._matches_done_text(action, text):
-                self.log(f"检测到已签到提示，结束连续点击: {text}")
-                return True
-            if self._matches_success_text(action, text):
-                self.log(f"检测到签到成功提示，结束连续点击: {text}")
-                return True
-
+        # 只检查按钮是否还存在，弹窗文本由 _callback_answer_matches_terminal_state 处理。
+        # 消息体包含键盘按钮文字，扫描消息体会导致按钮名与默认关键词误匹配。
         latest_found = self._find_latest_callback_button(route_key, action.text)
         if latest_found is None:
             return True
@@ -1620,7 +1582,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         route_key: Optional[RouteKey] = None,
     ) -> bool:
         try:
-            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.async_api import \
+                TimeoutError as PlaywrightTimeoutError
             from playwright.async_api import async_playwright
         except ImportError:
             self.log(
