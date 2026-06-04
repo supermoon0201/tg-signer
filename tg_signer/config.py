@@ -207,6 +207,7 @@ class SupportAction(int, Enum):
     OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并点击页面按钮
     CHOOSE_OPTION_BY_TEXT = 9  # 根据文本题面选择选项
     SESSION_PANEL_CHECKIN = 10  # 基于session(cookie)的面板接口签到
+    TGBOT_CHECKIN_WITH_RENEW = 11  # Bot内纯按钮签到+条件续期
 
     @property
     def desc(self):
@@ -221,6 +222,7 @@ class SupportAction(int, Enum):
             SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
             SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面选择选项",
             SupportAction.SESSION_PANEL_CHECKIN: "面板接口签到(session)",
+            SupportAction.TGBOT_CHECKIN_WITH_RENEW: "Bot内签到+条件续期",
         }[self]
 
 
@@ -331,6 +333,29 @@ class OpenWebAppByTextAction(SignAction):
     turnstile_retry_after_solve: bool = True  # 通过 Turnstile 后是否重试业务按钮
 
 
+class TgBotCheckinWithRenewAction(SignAction):
+    """Bot 内纯按钮签到 + 条件续期。
+
+    适用于通过 Telegram Bot 按钮完成签到、查询余额和剩余天数、
+    并在满足条件时自动续期的场景（如 EmbyPulse @maowoyy_bot 类面板）。
+    """
+
+    action: Literal[SupportAction.TGBOT_CHECKIN_WITH_RENEW] = (
+        SupportAction.TGBOT_CHECKIN_WITH_RENEW
+    )
+    profile_btn_text: str = "👤 个人中心"  # 点击后展示余额和剩余天数的按钮文本
+    checkin_btn_text: str = "✅ 签到领积分"  # 签到按钮文本
+    already_signed_text: str = "已经签到"  # 已签到提示文本（含此子串即视为已签）
+    balance_regex: str = r"积分余额[：:]\s*(\d+)"  # 从消息文本提取余额的正则
+    days_regex: str = r"剩余\s*(\d+)\s*天"  # 从消息文本提取剩余天数的正则
+    auto_renew_threshold_days: Optional[int] = None  # 剩余天数≤此值时尝试续期，None表示不续期
+    renew_cost: int = 60  # 续期所需积分
+    renew_btn_text: str = "🎟️ 续期"  # 进入续期菜单的按钮文本
+    renew_confirm_btn_text: str = "🛒 账号续期 30 天"  # 确认续期的按钮文本（含此子串即匹配）
+    bark_enabled: bool = False  # 是否启用 Bark 通知
+    bark_notify_level: Literal["all", "renew_only"] = "all"  # all=全部事件通知；renew_only=仅续期相关（余额不足/续期成功/续期失败）
+
+
 class SessionPanelCheckinAction(SignAction):
     """基于 session(cookie) 的面板接口签到。
 
@@ -368,6 +393,7 @@ ActionT: TypeAlias = Union[
     ChooseOptionByGifAction,
     WebViewCheckinAction,
     OpenWebAppByTextAction,
+    TgBotCheckinWithRenewAction,
     SessionPanelCheckinAction,
 ]
 

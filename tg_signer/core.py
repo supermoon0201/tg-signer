@@ -37,8 +37,8 @@ from tg_signer.config import (ActionT, BaseJSONConfig, ChatId,
                               ReplyByCalculationProblemAction, SendDiceAction,
                               SendTextAction, SessionPanelCheckinAction,
                               SignChatV3, SignConfigV3, SupportAction,
-                              UDPForward, WebViewCheckinAction,
-                              parse_chat_id_or_username)
+                              TgBotCheckinWithRenewAction, UDPForward,
+                              WebViewCheckinAction, parse_chat_id_or_username)
 
 from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
@@ -3165,6 +3165,206 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             group=os.environ.get("BARK_GROUP"),
         )
 
+    async def _tgbot_checkin_with_renew(
+        self, chat: SignChatV3, action: TgBotCheckinWithRenewAction
+    ) -> bool:
+        """Bot 内纯按钮签到 + 条件续期。
+
+        流程：点个人中心 → 读余额/天数 → 点签到 → 再刷新余额 → 按需续期。
+        """
+        import re as _re
+
+        chat_id = chat.chat_id
+        route_key = self.get_runtime_route_key(chat)
+
+        def _get_latest_message() -> Optional[Message]:
+            """获取当前 route_key 下最新的 bot 消息"""
+            msgs = self.context.chat_messages.get(route_key, {})
+            for msg in reversed(list(msgs.values())):
+                if msg and (msg.text or msg.caption):
+                    return msg
+            return None
+
+        async def _wait_new_message(prev_id: Optional[int], timeout: float = 8.0) -> Optional[Message]:
+            """等待收到与 prev_id 不同的新消息"""
+            start = time.perf_counter()
+            while time.perf_counter() - start < timeout:
+                await asyncio.sleep(0.3)
+                msg = _get_latest_message()
+                if msg and msg.id != prev_id:
+                    return msg
+            return None
+
+        def _extract_int(text: str, pattern: str) -> Optional[int]:
+            m = _re.search(pattern, text)
+            return int(m.group(1)) if m else None
+
+        def _click_btn(msg: Message, btn_text: str) -> Optional[InlineKeyboardButton]:
+            """在消息中查找包含 btn_text 的按钮"""
+            if not msg or not isinstance(getattr(msg, "reply_markup", None), InlineKeyboardMarkup):
+                return None
+            for row in msg.reply_markup.inline_keyboard:
+                for btn in row:
+                    if btn.text and btn_text in btn.text and btn.callback_data:
+                        return btn
+            return None
+
+        async def _do_click(msg: Message, btn_text: str) -> Optional[Message]:
+            """点击按钮并等待新消息返回；返回新消息，失败返回 None"""
+            btn = _click_btn(msg, btn_text)
+            if not btn:
+                self.log(f"未找到按钮「{btn_text}」", level="WARNING")
+                return None
+            self.log(f"点击按钮: {btn.text}")
+            prev_id = _get_latest_message()
+            prev_id = prev_id.id if prev_id else None
+            await self.request_callback_answer(self.app, chat_id, msg.id, btn.callback_data)
+            new_msg = await _wait_new_message(prev_id)
+            if not new_msg:
+                self.log(f"点击「{btn_text}」后未收到回复", level="WARNING")
+            return new_msg
+
+        async def _send_bark(title: str, body: str, renew_related: bool = False) -> None:
+            """发送 Bark 通知。renew_related=True 表示续期相关事件，受 bark_notify_level 控制。"""
+            if not action.bark_enabled:
+                return
+            if action.bark_notify_level == "renew_only" and not renew_related:
+                return
+            bark_url = os.environ.get("BARK_URL")
+            if not bark_url:
+                self.log("未配置Bark URL（环境变量BARK_URL）", level="WARNING")
+                return
+            await bark_send(
+                bark_url=bark_url,
+                title=title,
+                body=body,
+                sound=os.environ.get("BARK_SOUND"),
+                group=os.environ.get("BARK_GROUP"),
+            )
+
+        self.context.waiter.add(route_key)
+
+        # 等待主菜单消息就绪（由前置 SendTextAction /start 触发）
+        start = time.perf_counter()
+        main_menu_msg = None
+        while time.perf_counter() - start < 8.0:
+            await asyncio.sleep(0.3)
+            main_menu_msg = _get_latest_message()
+            if main_menu_msg:
+                break
+        if not main_menu_msg:
+            self.log("未收到 bot 主菜单消息", level="WARNING")
+            self.context.waiter.sub(route_key)
+            return False
+
+        # 1. 点「个人中心」读取余额和剩余天数
+        profile_msg = await _do_click(main_menu_msg, action.profile_btn_text)
+        if not profile_msg:
+            self.context.waiter.sub(route_key)
+            return False
+
+        text = profile_msg.text or profile_msg.caption or ""
+        balance = _extract_int(text, action.balance_regex)
+        days_left = _extract_int(text, action.days_regex)
+        self.log(f"个人中心 — 余额: {balance} 积分，剩余天数: {days_left} 天")
+
+        # 2. 点「签到」按钮
+        checkin_msg = await _do_click(profile_msg, action.checkin_btn_text)
+        if not checkin_msg:
+            self.context.waiter.sub(route_key)
+            return False
+
+        checkin_text = checkin_msg.text or checkin_msg.caption or ""
+        if action.already_signed_text in checkin_text:
+            self.log("今日已签到，跳过")
+            already_signed = True
+        else:
+            self.log(f"签到完成: {checkin_text[:80]}")
+            already_signed = False
+
+        # 3. 再次刷新余额（点「主菜单」按钮，再点「个人中心」）
+        back_btn_text = "主菜单"
+        back_msg = await _do_click(checkin_msg, back_btn_text)
+        profile_msg2 = None
+        if back_msg:
+            profile_msg2 = await _do_click(back_msg, action.profile_btn_text)
+            if profile_msg2:
+                text2 = profile_msg2.text or profile_msg2.caption or ""
+                balance = _extract_int(text2, action.balance_regex) or balance
+                days_left = _extract_int(text2, action.days_regex) or days_left
+                self.log(f"刷新后 — 余额: {balance} 积分，剩余天数: {days_left} 天")
+
+        # 签到成功时通知（已签到则静默）
+        if not already_signed:
+            await _send_bark(
+                f"Bot签到成功 - {chat_id}",
+                f"签到成功\n余额: {balance} 积分  剩余: {days_left} 天",
+            )
+
+        # 4. 条件续期
+        should_renew = (
+            action.auto_renew_threshold_days is not None
+            and days_left is not None
+            and balance is not None
+            and days_left <= action.auto_renew_threshold_days
+            and balance >= action.renew_cost
+        )
+        # 余额不足但到续期阈值时通知
+        low_balance = (
+            action.auto_renew_threshold_days is not None
+            and days_left is not None
+            and balance is not None
+            and days_left <= action.auto_renew_threshold_days
+            and balance < action.renew_cost
+        )
+        if should_renew:
+            self.log(
+                f"剩余 {days_left} 天 ≤ 阈值 {action.auto_renew_threshold_days}，"
+                f"余额 {balance} ≥ {action.renew_cost}，尝试续期..."
+            )
+            # 续期入口在个人中心消息里
+            renew_menu_msg = profile_msg2 if profile_msg2 else profile_msg
+            goto_renew_msg = await _do_click(renew_menu_msg, action.renew_btn_text)
+            if goto_renew_msg:
+                confirm_msg = await _do_click(goto_renew_msg, action.renew_confirm_btn_text)
+                if confirm_msg:
+                    result_text = confirm_msg.text or confirm_msg.caption or ""
+                    self.log(f"续期结果: {result_text[:100]}")
+                    await _send_bark(
+                        f"Bot续期成功 - {chat_id}",
+                        f"续期成功\n{result_text[:100]}",
+                        renew_related=True,
+                    )
+                else:
+                    self.log("未找到续期确认按钮", level="WARNING")
+                    await _send_bark(
+                        f"Bot续期失败 - {chat_id}",
+                        f"未找到续期确认按钮「{action.renew_confirm_btn_text}」",
+                        renew_related=True,
+                    )
+            else:
+                self.log("未找到续期入口按钮", level="WARNING")
+                await _send_bark(
+                    f"Bot续期失败 - {chat_id}",
+                    f"未找到续期入口按钮「{action.renew_btn_text}」",
+                    renew_related=True,
+                )
+        elif low_balance:
+            self.log(
+                f"余额不足，无法续期 — 剩余 {days_left} 天，余额 {balance} 积分（需 {action.renew_cost}）",
+                level="WARNING",
+            )
+            await _send_bark(
+                f"Bot余额不足 - {chat_id}",
+                f"剩余 {days_left} 天，但余额仅 {balance} 积分，需 {action.renew_cost} 积分续期",
+                renew_related=True,
+            )
+        elif action.auto_renew_threshold_days is not None:
+            self.log(f"无需续期 — 剩余 {days_left} 天，余额 {balance} 积分")
+
+        self.context.waiter.sub(route_key)
+        return True
+
     async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=10):
         if isinstance(action, SendTextAction):
             return await self.send_message(
@@ -3184,6 +3384,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return await self._webview_checkin(action)
         elif isinstance(action, SessionPanelCheckinAction):
             return await self._session_panel_checkin(action)
+        elif isinstance(action, TgBotCheckinWithRenewAction):
+            return await self._tgbot_checkin_with_renew(chat, action)
 
         # 特殊处理GIF验证码场景：需要等待两条消息
         if isinstance(action, ChooseOptionByGifAction):
