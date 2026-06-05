@@ -7,11 +7,21 @@ import pathlib
 import random
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
-from datetime import timedelta, timezone
-from typing import (Annotated, Any, Awaitable, BinaryIO, Callable, Generic,
-                    List, Optional, Type, TypeVar, Union)
+from typing import (
+    Annotated,
+    Any,
+    Awaitable,
+    BinaryIO,
+    Callable,
+    Generic,
+    List,
+    Optional,
+    Type,
+    TypeVar,
+    Union,
+)
 from urllib import parse
 
 import httpx
@@ -24,30 +34,48 @@ from pyrogram.handlers import EditedMessageHandler, MessageHandler
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
 from pyrogram.storage import SQLiteStorage
-from pyrogram.types import (Chat, InlineKeyboardButton, InlineKeyboardMarkup,
-                            Message, Object, ReplyKeyboardMarkup, User)
+from pyrogram.types import (
+    Chat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    Object,
+    ReplyKeyboardMarkup,
+    User,
+)
 
-from tg_signer.config import (ActionT, BaseJSONConfig, ChatId,
-                              ChooseOptionByGifAction,
-                              ChooseOptionByImageAction,
-                              ChooseOptionByTextAction,
-                              ClickKeyboardByTextAction, HttpCallback,
-                              MatchConfig, MonitorConfig,
-                              OpenWebAppByTextAction,
-                              ReplyByCalculationProblemAction, SendDiceAction,
-                              SendTextAction, SessionPanelCheckinAction,
-                              SignChatV3, SignConfigV3, SupportAction,
-                              TgBotCheckinWithRenewAction, UDPForward,
-                              WebViewCheckinAction, parse_chat_id_or_username)
+from tg_signer.config import (
+    ActionT,
+    BaseJSONConfig,
+    ChatId,
+    ChooseOptionByGifAction,
+    ChooseOptionByImageAction,
+    ChooseOptionByTextAction,
+    ClickKeyboardByTextAction,
+    HttpCallback,
+    MatchConfig,
+    MonitorConfig,
+    OpenWebAppByTextAction,
+    ReplyByCalculationProblemAction,
+    SendDiceAction,
+    SendTextAction,
+    SessionPanelCheckinAction,
+    SignChatV3,
+    SignConfigV3,
+    SupportAction,
+    TgBotCheckinWithRenewAction,
+    UDPForward,
+    WebViewCheckinAction,
+    parse_chat_id_or_username,
+)
 
 from ._kurigram import SafeGetForumTopics
 from .ai_tools import AITools, OpenAIConfigManager
 from .notification.bark import bark_send
 from .notification.server_chan import sc_send
 from .sign_record_store import SignRecordStore
-from .utils import UserInput, get_now
+from .utils import UserInput, get_now, print_to_user
 from .utils import get_timezone as _get_timezone
-from .utils import print_to_user
 
 logger = logging.getLogger("tg-signer")
 
@@ -1340,7 +1368,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             if answer is not None:
                 return True
-            terminal = await self._wait_for_click_completion_state(route_key, action, 1.0)
+            terminal = await self._wait_for_click_completion_state(
+                route_key, action, 1.0
+            )
             return bool(terminal)
 
         clicked = False
@@ -1582,8 +1612,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         route_key: Optional[RouteKey] = None,
     ) -> bool:
         try:
-            from playwright.async_api import \
-                TimeoutError as PlaywrightTimeoutError
+            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
             from playwright.async_api import async_playwright
         except ImportError:
             self.log(
@@ -2334,9 +2363,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return False
 
             if isinstance(reply_markup, InlineKeyboardMarkup):
-                flat_buttons = (
-                    b for row in reply_markup.inline_keyboard for b in row
-                )
+                flat_buttons = (b for row in reply_markup.inline_keyboard for b in row)
                 option_to_btn = {
                     btn.text: btn
                     for btn in flat_buttons
@@ -3016,16 +3043,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return None, None
         menu_url = user_full.full_user.bot_info.menu_button.url
         auth = await self.app.invoke(
-            RequestWebView(
-                peer=bot_peer, bot=bot_peer, platform="ios", url=menu_url
-            )
+            RequestWebView(peer=bot_peer, bot=bot_peer, platform="ios", url=menu_url)
         )
         init_data = parse_qs(urlparse(auth.url).fragment).get("tgWebAppData", [""])[0]
         return menu_url, init_data
 
-    async def _session_panel_checkin(
-        self, action: SessionPanelCheckinAction
-    ) -> bool:
+    async def _session_panel_checkin(self, action: SessionPanelCheckinAction) -> bool:
         """基于 session(cookie) 的面板接口签到。
 
         流程: RequestWebView 取 initData -> POST auth_endpoint 换 session ->
@@ -3034,9 +3057,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         from urllib.parse import urlparse
 
         try:
-            menu_url, init_data = await self._get_webapp_init_data(
-                action.bot_username
-            )
+            menu_url, init_data = await self._get_webapp_init_data(action.bot_username)
         except Exception as e:
             self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
             await self._send_session_panel_bark(
@@ -3093,11 +3114,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 auth_payload = auth_resp.json()
             except Exception as e:
                 self.log(f"面板鉴权请求失败: {e}", level="ERROR")
-                await self._send_session_panel_bark(action, "失败", f"鉴权请求失败: {e}")
+                await self._send_session_panel_bark(
+                    action, "失败", f"鉴权请求失败: {e}"
+                )
                 return False
 
             if auth_payload.get(action.success_key) != action.success_value:
-                msg = auth_payload.get(action.message_key) if action.message_key else None
+                msg = (
+                    auth_payload.get(action.message_key) if action.message_key else None
+                )
                 self.log(f"面板鉴权失败: {msg or auth_payload}", level="WARNING")
                 await self._send_session_panel_bark(
                     action, "失败", f"鉴权失败: {msg or auth_payload}"
@@ -3127,13 +3152,13 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 checkin_payload = checkin_resp.json()
             except Exception as e:
                 self.log(f"面板签到请求失败: {e}", level="ERROR")
-                await self._send_session_panel_bark(action, "失败", f"签到请求失败: {e}")
+                await self._send_session_panel_bark(
+                    action, "失败", f"签到请求失败: {e}"
+                )
                 return False
 
             msg = (
-                checkin_payload.get(action.message_key)
-                if action.message_key
-                else None
+                checkin_payload.get(action.message_key) if action.message_key else None
             )
             if checkin_payload.get(action.success_key) == action.success_value:
                 self.log(f"面板签到成功: {msg or checkin_payload}")
@@ -3185,13 +3210,27 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     return msg
             return None
 
-        async def _wait_new_message(prev_id: Optional[int], timeout: float = 8.0) -> Optional[Message]:
-            """等待收到与 prev_id 不同的新消息"""
+        async def _wait_new_message_or_edit(
+            prev_id: Optional[int],
+            prev_text: str,
+            timeout: float = 8.0,
+        ) -> Optional[Message]:
+            """等待收到新消息，或原消息被编辑（内容变化）。
+
+            许多 Telegram Bot 点击 inline 按钮后编辑原消息而不是发新消息，
+            此函数同时支持这两种响应方式。
+            """
             start = time.perf_counter()
             while time.perf_counter() - start < timeout:
                 await asyncio.sleep(0.3)
                 msg = _get_latest_message()
-                if msg and msg.id != prev_id:
+                if not msg:
+                    continue
+                if msg.id != prev_id:
+                    return msg  # 收到新消息
+                # 同 ID 但内容变化 → 原消息被编辑
+                cur_text = msg.text or msg.caption or ""
+                if cur_text != prev_text:
                     return msg
             return None
 
@@ -3201,7 +3240,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         def _click_btn(msg: Message, btn_text: str) -> Optional[InlineKeyboardButton]:
             """在消息中查找包含 btn_text 的按钮"""
-            if not msg or not isinstance(getattr(msg, "reply_markup", None), InlineKeyboardMarkup):
+            if not msg or not isinstance(
+                getattr(msg, "reply_markup", None), InlineKeyboardMarkup
+            ):
                 return None
             for row in msg.reply_markup.inline_keyboard:
                 for btn in row:
@@ -3210,21 +3251,26 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return None
 
         async def _do_click(msg: Message, btn_text: str) -> Optional[Message]:
-            """点击按钮并等待新消息返回；返回新消息，失败返回 None"""
+            """点击按钮并等待 Bot 响应（新消息或编辑原消息）；返回响应消息，失败返回 None"""
             btn = _click_btn(msg, btn_text)
             if not btn:
                 self.log(f"未找到按钮「{btn_text}」", level="WARNING")
                 return None
             self.log(f"点击按钮: {btn.text}")
-            prev_id = _get_latest_message()
-            prev_id = prev_id.id if prev_id else None
-            await self.request_callback_answer(self.app, chat_id, msg.id, btn.callback_data)
-            new_msg = await _wait_new_message(prev_id)
+            prev_msg = _get_latest_message()
+            prev_id = prev_msg.id if prev_msg else None
+            prev_text = (prev_msg.text or prev_msg.caption or "") if prev_msg else ""
+            await self.request_callback_answer(
+                self.app, chat_id, msg.id, btn.callback_data
+            )
+            new_msg = await _wait_new_message_or_edit(prev_id, prev_text)
             if not new_msg:
                 self.log(f"点击「{btn_text}」后未收到回复", level="WARNING")
             return new_msg
 
-        async def _send_bark(title: str, body: str, renew_related: bool = False) -> None:
+        async def _send_bark(
+            title: str, body: str, renew_related: bool = False
+        ) -> None:
             """发送 Bark 通知。renew_related=True 表示续期相关事件，受 bark_notify_level 控制。"""
             if not action.bark_enabled:
                 return
@@ -3326,7 +3372,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             renew_menu_msg = profile_msg2 if profile_msg2 else profile_msg
             goto_renew_msg = await _do_click(renew_menu_msg, action.renew_btn_text)
             if goto_renew_msg:
-                confirm_msg = await _do_click(goto_renew_msg, action.renew_confirm_btn_text)
+                confirm_msg = await _do_click(
+                    goto_renew_msg, action.renew_confirm_btn_text
+                )
                 if confirm_msg:
                     result_text = confirm_msg.text or confirm_msg.caption or ""
                     self.log(f"续期结果: {result_text[:100]}")
