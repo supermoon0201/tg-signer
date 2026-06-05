@@ -130,3 +130,7 @@ AGENTS.md
 .ace-tool/
 docs/
 .claude/
+data/
+tmp_lily_checkin.html
+test_maowoyy
+debug_*
