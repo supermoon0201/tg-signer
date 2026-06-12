@@ -208,6 +208,7 @@ class SupportAction(int, Enum):
     CHOOSE_OPTION_BY_TEXT = 9  # 根据文本题面选择选项
     SESSION_PANEL_CHECKIN = 10  # 基于session(cookie)的面板接口签到
     TGBOT_CHECKIN_WITH_RENEW = 11  # Bot内纯按钮签到+条件续期
+    WEBAPP_API_CHECKIN = 12  # WebApp initData→JWT→2captcha Turnstile→API签到
 
     @property
     def desc(self):
@@ -223,6 +224,7 @@ class SupportAction(int, Enum):
             SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面选择选项",
             SupportAction.SESSION_PANEL_CHECKIN: "面板接口签到(session)",
             SupportAction.TGBOT_CHECKIN_WITH_RENEW: "Bot内签到+条件续期",
+            SupportAction.WEBAPP_API_CHECKIN: "WebApp API签到(Turnstile)",
         }[self]
 
 
@@ -383,6 +385,47 @@ class SessionPanelCheckinAction(SignAction):
     bark_enabled: bool = False  # 是否启用 Bark 通知
 
 
+class WebAppApiCheckinAction(SignAction):
+    """WebApp initData → JWT → 2captcha Turnstile → API 签到。
+
+    适用于需要人机验证的 Telegram WebApp 签到场景：
+    通过 RequestWebView 获取 initData，调 auth 接口换 JWT，
+    再用 2captcha 解 Turnstile，最后调签到接口完成签到。
+    无需 Playwright。
+    """
+
+    action: Literal[SupportAction.WEBAPP_API_CHECKIN] = (
+        SupportAction.WEBAPP_API_CHECKIN
+    )
+    bot_username: Optional[str] = None  # Bot 用户名，留空则直接使用 chat_id（推荐）
+    webapp_url: Optional[str] = None  # WebApp URL，留空则自动从触发命令回复的内联键盘中提取
+    webapp_trigger_command: Optional[str] = None  # webapp_url 为空时自动发此命令让 Bot 回复含 WebApp 按钮的消息
+    webapp_button_text: Optional[str] = None  # 内联键盘中 WebApp 按钮的文字，用于定位按钮（留空则取第一个 WebApp 按钮）
+    api_base_url: Optional[str] = None  # API 基础URL，留空则从 webapp_url 推导
+    auth_endpoint: str = "/api/telegram-miniapp/auth"  # initData 换 JWT 的接口
+    auth_telegram_id_field: str = "telegramId"  # auth 请求中放 telegramId 的字段名
+    auth_init_data_field: str = "initData"  # auth 请求中放 initData 的字段名
+    auth_token_path: str = "token"  # auth 响应中 JWT 的点分路径
+    status_endpoint: Optional[str] = "/api/checkin/status"  # 已签状态查询接口，留空则跳过
+    status_already_checked_path: str = "hasCheckedInToday"  # 已签字段的点分路径
+    checkin_endpoint: str = "/api/checkin"  # 签到接口
+    checkin_token_field: str = "verificationToken"  # 签到请求中放 Turnstile token 的字段
+    success_key: str = "success"  # 签到响应中判定成功的字段
+    success_value: Union[bool, int, str] = True  # 成功字段的期望值
+    message_key: Optional[str] = "message"  # 日志展示用的消息字段
+    amount_key: Optional[str] = "amount"  # 签到奖励金额字段
+    currency_unit_key: Optional[str] = "currencyUnit"  # 签到奖励货币单位字段
+    balance_key: Optional[str] = "balance"  # 签到后余额字段
+    turnstile_sitekey: Optional[str] = None  # Turnstile sitekey，留空则自动从验证配置接口获取
+    verification_config_endpoint: str = "/api/settings/verification/public"  # 获取 sitekey 的接口
+    two_captcha_api_key: Optional[str] = None  # 2captcha API Key，留空则使用环境变量 TWOCAPTCHA_API_KEY
+    turnstile_max_attempts: int = 3  # Turnstile 最多重试次数
+    turnstile_poll_interval: int = 5  # 2captcha 轮询间隔秒数
+    turnstile_single_timeout: int = 90  # 单次 2captcha 任务超时秒数
+    extra_headers: Optional[dict] = None  # 额外请求头
+    bark_enabled: bool = False  # 是否启用 Bark 通知（URL 等配置从环境变量 BARK_URL/BARK_SOUND/BARK_GROUP 读取）
+
+
 ActionT: TypeAlias = Union[
     SendTextAction,
     SendDiceAction,
@@ -395,6 +438,7 @@ ActionT: TypeAlias = Union[
     OpenWebAppByTextAction,
     TgBotCheckinWithRenewAction,
     SessionPanelCheckinAction,
+    WebAppApiCheckinAction,
 ]
 
 

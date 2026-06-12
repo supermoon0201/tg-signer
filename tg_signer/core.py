@@ -65,6 +65,7 @@ from tg_signer.config import (
     SupportAction,
     TgBotCheckinWithRenewAction,
     UDPForward,
+    WebAppApiCheckinAction,
     WebViewCheckinAction,
     parse_chat_id_or_username,
 )
@@ -2562,7 +2563,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return False
 
     async def _send_bark_notification(
-        self, action: WebViewCheckinAction, title: str, body: str
+        self, action: "Union[WebViewCheckinAction, WebAppApiCheckinAction]", title: str, body: str
     ) -> None:
         """发送Bark通知的辅助方法"""
         if action.bark_enabled:
@@ -3190,6 +3191,309 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             group=os.environ.get("BARK_GROUP"),
         )
 
+    async def _webapp_api_checkin(self, chat: "SignChatV3", action: "WebAppApiCheckinAction") -> bool:
+        """WebApp initData -> JWT -> 2captcha Turnstile -> API 签到。
+
+        无需 Playwright，纯 HTTP 调用流程：
+        1. 通过 Bot 菜单按钮或指定 URL 获取带 initData 的 WebView URL
+        2. 调 auth 接口换取 JWT
+        3. 检查今日是否已签（可选）
+        4. 2captcha 解 Turnstile
+        5. 带 verificationToken 调签到接口
+        """
+        from urllib.parse import parse_qs, unquote, urlparse
+
+        import httpx
+
+        # 按点分路径取嵌套字段值，如 'solution.token'
+        def _nested(data, path):
+            for key in path.split("."):
+                if not isinstance(data, dict):
+                    return None
+                data = data.get(key)
+            return data
+
+        api_key = (
+            action.two_captcha_api_key
+            or os.environ.get("TWOCAPTCHA_API_KEY")
+            or ""
+        )
+        if not api_key:
+            self.log(
+                "WebAppApiCheckinAction 需要 2captcha API Key，"
+                "请在 two_captcha_api_key 字段或环境变量 TWOCAPTCHA_API_KEY 中配置。",
+                level="ERROR",
+            )
+            return False
+
+        # Step 1: 获取 WebApp URL 与 initData
+        # bot_peer 标识：优先用 bot_username，否则用 chat.chat_id
+        _bot_target = action.bot_username or chat.chat_id
+        try:
+            if action.webapp_url:
+                # 直接提供了 webapp_url，通过 RequestWebView 获取含 initData 的真实 URL
+                from pyrogram.raw.functions.messages import RequestWebView as _RWV
+
+                bot_peer = await self.app.resolve_peer(_bot_target)
+                auth_result = await self.app.invoke(
+                    _RWV(
+                        peer=bot_peer,
+                        bot=bot_peer,
+                        platform="ios",
+                        url=action.webapp_url,
+                    )
+                )
+                menu_url = action.webapp_url
+                init_data_raw = parse_qs(urlparse(auth_result.url).fragment).get(
+                    "tgWebAppData", [""]
+                )[0]
+            elif action.webapp_trigger_command:
+                # 发触发命令，从 Bot 回复的内联键盘中自动提取 WebApp 按钮 URL
+                self.log(
+                    f"webapp_url 未配置，发送命令 {action.webapp_trigger_command!r} "
+                    "等待 Bot 回复内联键盘..."
+                )
+                sent = await self.send_message(
+                    _bot_target, action.webapp_trigger_command
+                )
+                # 等待 Bot 回复含内联键盘的消息（最多 15s）
+                reply_msg = None
+                deadline = time.monotonic() + 15
+                async for _msg in self.app.get_chat_history(
+                    _bot_target, limit=1
+                ):
+                    pass  # 先触发一次，建立游标
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(1)
+                    async for msg in self.app.get_chat_history(
+                        _bot_target, limit=5
+                    ):
+                        if msg.id <= sent.id:
+                            break
+                        if isinstance(
+                            getattr(msg, "reply_markup", None), InlineKeyboardMarkup
+                        ):
+                            for row in msg.reply_markup.inline_keyboard:
+                                for btn in row:
+                                    if btn.web_app or btn.url or btn.login_url:
+                                        if (
+                                            action.webapp_button_text is None
+                                            or action.webapp_button_text in (btn.text or "")
+                                        ):
+                                            reply_msg = msg
+                                            break
+                                if reply_msg:
+                                    break
+                        if reply_msg:
+                            break
+                    if reply_msg:
+                        break
+
+                if reply_msg is None:
+                    self.log("未在 Bot 回复中找到含 WebApp 按钮的消息", level="ERROR")
+                    return False
+
+                # 找到对应按钮，通过 _get_webview_url_from_button 获取带 initData 的 URL
+                target_btn = None
+                for row in reply_msg.reply_markup.inline_keyboard:
+                    for btn in row:
+                        if btn.web_app or btn.url or btn.login_url:
+                            if (
+                                action.webapp_button_text is None
+                                or action.webapp_button_text in (btn.text or "")
+                            ):
+                                target_btn = btn
+                                break
+                    if target_btn:
+                        break
+
+                raw_btn_url = (
+                    (target_btn.web_app.url if target_btn.web_app else None)
+                    or target_btn.url
+                    or (target_btn.login_url.url if target_btn.login_url else None)
+                )
+                full_url = await self._get_webview_url_from_button(reply_msg, target_btn)
+                menu_url = raw_btn_url
+                init_data_raw = parse_qs(urlparse(full_url).fragment).get(
+                    "tgWebAppData", [""]
+                )[0]
+                self.log(f"从内联键盘自动获取 webapp_url: {menu_url}")
+            else:
+                # 从 Bot 菜单按钮自动获取 WebApp URL
+                menu_url, init_data_raw = await self._get_webapp_init_data(
+                    _bot_target
+                )
+        except Exception as e:
+            self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
+            return False
+
+        if not menu_url or not init_data_raw:
+            self.log("未能获取 WebApp initData", level="ERROR")
+            return False
+
+        # parse_qs 返回的 tgWebAppData 仍是 URL 编码字符串，需再解码一次
+        init_data = unquote(init_data_raw)
+
+        if action.api_base_url:
+            api_base = action.api_base_url.rstrip("/")
+        else:
+            p = urlparse(menu_url)
+            api_base = f"{p.scheme}://{p.netloc}"
+
+        me = await self.app.get_me()
+        telegram_id = me.id
+        self.log(f"initData 获取成功，telegramId={telegram_id}，api_base={api_base}")
+
+        # 公共请求头（模拟真实移动端浏览器，避免 Cloudflare 403）
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+            ),
+            "Origin": api_base,
+            "Referer": f"{api_base}/",
+        }
+        if action.extra_headers:
+            headers.update(action.extra_headers)
+
+        async with httpx.AsyncClient(timeout=20, headers=headers) as http:
+            # Step 2: auth -> JWT
+            ar = await http.post(
+                f"{api_base}{action.auth_endpoint}",
+                json={
+                    action.auth_telegram_id_field: telegram_id,
+                    action.auth_init_data_field: init_data,
+                },
+            )
+            ad = ar.json()
+            jwt_token = _nested(ad, action.auth_token_path)
+            if not jwt_token or not ad.get("success"):
+                self.log(f"Auth 失败: HTTP {ar.status_code} {ad}", level="ERROR")
+                return False
+            self.log("Auth 成功，JWT 已获取")
+
+            # Step 3: 检查今日签到状态（可选）
+            if action.status_endpoint:
+                sr = await http.get(
+                    f"{api_base}{action.status_endpoint}",
+                    headers={"Authorization": f"Bearer {jwt_token}"},
+                )
+                sd = sr.json()
+                if _nested(sd, action.status_already_checked_path):
+                    self.log("今日已签到，跳过")
+                    await self._send_bark_notification(
+                        action, "签到通知", "今日已签到，跳过"
+                    )
+                    return True
+
+            # Step 4: 获取 Turnstile sitekey（可配置或自动从接口获取）
+            sitekey = action.turnstile_sitekey
+            if not sitekey:
+                try:
+                    vc = await http.get(
+                        f"{api_base}{action.verification_config_endpoint}"
+                    )
+                    vcd = vc.json()
+                    ci_vc = vcd.get("checkin") or {}
+                    sitekey = ci_vc.get("siteKey") or ci_vc.get("sitekey")
+                except Exception as e:
+                    self.log(f"获取验证配置失败: {e}", level="WARNING")
+
+        # Step 5: 2captcha 解 Turnstile（含重试）
+        verification_token = None
+        if sitekey:
+            page_url = menu_url.split("?")[0].split("#")[0]
+            for attempt in range(1, action.turnstile_max_attempts + 1):
+                self.log(
+                    f"[2captcha] 第 {attempt}/{action.turnstile_max_attempts} 次尝试解 Turnstile..."
+                )
+                async with httpx.AsyncClient(timeout=30) as cap:
+                    cr = await cap.post(
+                        "https://api.2captcha.com/createTask",
+                        json={
+                            "clientKey": api_key,
+                            "task": {
+                                "type": "TurnstileTaskProxyless",
+                                "websiteURL": page_url,
+                                "websiteKey": sitekey,
+                            },
+                        },
+                    )
+                    crd = cr.json()
+                    if crd.get("errorId") != 0:
+                        self.log(f"[2captcha] 提交失败: {crd}", level="WARNING")
+                        continue
+                    task_id = crd["taskId"]
+                    self.log(f"[2captcha] 任务 ID: {task_id}")
+                    await asyncio.sleep(8)
+                    deadline = time.monotonic() + action.turnstile_single_timeout
+                    solved = False
+                    while time.monotonic() < deadline:
+                        rr = await cap.post(
+                            "https://api.2captcha.com/getTaskResult",
+                            json={"clientKey": api_key, "taskId": task_id},
+                        )
+                        rrd = rr.json()
+                        if rrd.get("errorId", 0) != 0:
+                            self.log(
+                                f"[2captcha] {rrd.get('errorCode')} — 重试",
+                                level="WARNING",
+                            )
+                            break
+                        if rrd.get("status") == "ready":
+                            verification_token = rrd["solution"]["token"]
+                            self.log("[2captcha] Turnstile token 获取成功")
+                            solved = True
+                            break
+                        await asyncio.sleep(action.turnstile_poll_interval)
+                    if solved:
+                        break
+            if not verification_token:
+                self.log(
+                    f"[2captcha] {action.turnstile_max_attempts} 次尝试后未解出 Turnstile，"
+                    "尝试不带 token 签到",
+                    level="WARNING",
+                )
+        else:
+            self.log("未获取 Turnstile sitekey，尝试不带 token 签到", level="WARNING")
+
+        # Step 6: 执行签到
+        body: dict = {}
+        if verification_token:
+            body[action.checkin_token_field] = verification_token
+
+        async with httpx.AsyncClient(timeout=20, headers=headers) as http:
+            ci = await http.post(
+                f"{api_base}{action.checkin_endpoint}",
+                json=body,
+                headers={"Authorization": f"Bearer {jwt_token}"},
+            )
+            cid = ci.json()
+            ok = cid.get(action.success_key) == action.success_value
+            msg = cid.get(action.message_key, "") if action.message_key else ""
+            amt = cid.get(action.amount_key, "") if action.amount_key else ""
+            unit = cid.get(action.currency_unit_key, "") if action.currency_unit_key else ""
+            balance = cid.get(action.balance_key, "") if action.balance_key else ""
+            if ok:
+                # 格式化为：签到成功！+1.28 STARRY（余额: 5.50 STARRY）
+                reward_str = f"+{amt} {unit}".strip() if amt else ""
+                balance_str = f"{balance} {unit}".strip() if balance else ""
+                success_text = "签到成功！"
+                if reward_str:
+                    success_text += f" {reward_str}"
+                if balance_str:
+                    success_text += f"（余额: {balance_str}）"
+                if msg and msg not in success_text:
+                    success_text += f" — {msg}"
+                self.log(success_text)
+                await self._send_bark_notification(action, "签到通知", success_text)
+                return True
+            fail_text = f"签到接口返回失败: HTTP {ci.status_code} {cid}"
+            self.log(fail_text, level="ERROR")
+            await self._send_bark_notification(action, "签到失败", fail_text)
+            return False
+
     async def _tgbot_checkin_with_renew(
         self, chat: SignChatV3, action: TgBotCheckinWithRenewAction
     ) -> bool:
@@ -3434,6 +3738,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return await self._session_panel_checkin(action)
         elif isinstance(action, TgBotCheckinWithRenewAction):
             return await self._tgbot_checkin_with_renew(chat, action)
+        elif isinstance(action, WebAppApiCheckinAction):
+            return await self._webapp_api_checkin(chat, action)
 
         # 特殊处理GIF验证码场景：需要等待两条消息
         if isinstance(action, ChooseOptionByGifAction):
