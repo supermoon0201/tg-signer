@@ -48,14 +48,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /src
 
-# Copy source code
 COPY --from=tgcrypto-builder /tmp/wheels /tmp/wheels
-COPY pyproject.toml ./
-COPY README.md ./
-COPY tg_signer ./tg_signer
-COPY assets ./assets
 
-# Install dependencies
+# 先安装与源码无关的浏览器运行时，避免每次改代码都重新下载 Playwright 浏览器。
 ARG PIP_INDEX_URL
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install --upgrade pip setuptools wheel \
@@ -63,9 +58,21 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install /tmp/wheels/*.whl && \
     python -m pip install \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    . playwright && \
+    playwright && \
     rm -rf /tmp/wheels && \
     python -m playwright install --with-deps chromium
+
+# Copy source code
+COPY pyproject.toml ./
+COPY README.md ./
+COPY tg_signer ./tg_signer
+COPY assets ./assets
+
+# 再安装项目本身；此层失效时不会触发浏览器重新下载。
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python -m pip install \
+    --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
+    .
 
 # Data directory for runtime
 WORKDIR /app
