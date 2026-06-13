@@ -2218,6 +2218,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             },
         )
 
+    async def _has_context_cookie(
+        self, page: Any, cookie_name: str, url: str
+    ) -> bool:
+        cookies = await page.context.cookies(url)
+        return any(cookie.get("name") == cookie_name for cookie in cookies)
+
     async def _ensure_playwright_turnstile_ready(
         self, page: Any, api_key: Optional[str], timeout_seconds: int
     ) -> bool:
@@ -2255,6 +2261,59 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return True
         self.log("Playwright 回退流程未能通过 Turnstile。", level="ERROR")
         return False
+
+    async def _warmup_playwright_cloudflare(
+        self,
+        *,
+        browser: Any,
+        page: Any,
+        api_base: str,
+        api_key: Optional[str],
+        timeout_seconds: int,
+    ) -> bool:
+        """预热同源上下文，尽量先拿到 Cloudflare clearance cookie。"""
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+
+        if await self._has_context_cookie(page, "cf_clearance", api_base):
+            self.log("检测到 Cloudflare clearance cookie。")
+            return True
+
+        warmup_page = await browser.new_page()
+        try:
+            self.log("Playwright 正在预热站点首页，以获取 Cloudflare 放行态。")
+            await warmup_page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+            await warmup_page.goto(
+                f"{api_base}/",
+                wait_until="domcontentloaded",
+                timeout=timeout_seconds * 1000,
+            )
+            try:
+                await warmup_page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+            if await self._is_turnstile_visible(warmup_page):
+                if not await self._ensure_playwright_turnstile_ready(
+                    warmup_page, api_key, timeout_seconds
+                ):
+                    return False
+
+            deadline = time.monotonic() + min(timeout_seconds, 15)
+            while time.monotonic() < deadline:
+                if await self._has_context_cookie(
+                    warmup_page, "cf_clearance", api_base
+                ):
+                    self.log("Playwright 预热后已拿到 Cloudflare clearance cookie。")
+                    return True
+                await asyncio.sleep(1)
+
+            self.log("Playwright 预热后仍未检测到 clearance cookie，将继续尝试。")
+            return True
+        finally:
+            await warmup_page.close()
 
     async def _webapp_api_checkin_via_playwright(
         self,
@@ -2307,6 +2366,14 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     )
                     if not await self._ensure_playwright_turnstile_ready(
                         page, api_key or None, timeout_seconds
+                    ):
+                        return False
+                    if not await self._warmup_playwright_cloudflare(
+                        browser=browser,
+                        page=page,
+                        api_base=api_base,
+                        api_key=api_key or None,
+                        timeout_seconds=timeout_seconds,
                     ):
                         return False
 
