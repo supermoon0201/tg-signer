@@ -1224,6 +1224,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     self.log(f"签到失败: {_e} \nchat: \n{chat}")
                     logger.warning(_e, exc_info=True)
                     continue
+                except Exception as exc:
+                    # 单个 chat 的异常不应拖垮整轮签到，否则外层重启后会重复执行前序任务。
+                    self.log(f"签到异常: {exc} \nchat: \n{chat}", level="ERROR")
+                    logger.exception(exc)
+                    continue
 
                 if route_key is not None:
                     self.context.chat_messages[route_key].clear()
@@ -2563,7 +2568,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return False
 
     async def _send_bark_notification(
-        self, action: "Union[WebViewCheckinAction, WebAppApiCheckinAction]", title: str, body: str
+        self,
+        action: "Union[WebViewCheckinAction, WebAppApiCheckinAction]",
+        title: str,
+        body: str,
     ) -> None:
         """发送Bark通知的辅助方法"""
         if action.bark_enabled:
@@ -3191,7 +3199,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             group=os.environ.get("BARK_GROUP"),
         )
 
-    async def _webapp_api_checkin(self, chat: "SignChatV3", action: "WebAppApiCheckinAction") -> bool:
+    async def _webapp_api_checkin(
+        self, chat: "SignChatV3", action: "WebAppApiCheckinAction"
+    ) -> bool:
         """WebApp initData -> JWT -> 2captcha Turnstile -> API 签到。
 
         无需 Playwright，纯 HTTP 调用流程：
@@ -3213,10 +3223,24 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 data = data.get(key)
             return data
 
+        def _parse_json_response(response: httpx.Response, step_name: str):
+            # 将非 JSON 响应转成可记录的失败，避免直接抛异常打断整轮签到。
+            try:
+                return response.json()
+            except (json.JSONDecodeError, ValueError):
+                body = response.text.strip()
+                if len(body) > 500:
+                    body = f"{body[:500]}..."
+                if not body:
+                    body = "<empty>"
+                self.log(
+                    f"{step_name} 返回了非 JSON 响应: HTTP {response.status_code}, body={body}",
+                    level="ERROR",
+                )
+                return None
+
         api_key = (
-            action.two_captcha_api_key
-            or os.environ.get("TWOCAPTCHA_API_KEY")
-            or ""
+            action.two_captcha_api_key or os.environ.get("TWOCAPTCHA_API_KEY") or ""
         )
         if not api_key:
             self.log(
@@ -3259,15 +3283,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 # 等待 Bot 回复含内联键盘的消息（最多 15s）
                 reply_msg = None
                 deadline = time.monotonic() + 15
-                async for _msg in self.app.get_chat_history(
-                    _bot_target, limit=1
-                ):
+                async for _msg in self.app.get_chat_history(_bot_target, limit=1):
                     pass  # 先触发一次，建立游标
                 while time.monotonic() < deadline:
                     await asyncio.sleep(1)
-                    async for msg in self.app.get_chat_history(
-                        _bot_target, limit=5
-                    ):
+                    async for msg in self.app.get_chat_history(_bot_target, limit=5):
                         if msg.id <= sent.id:
                             break
                         if isinstance(
@@ -3278,7 +3298,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                     if btn.web_app or btn.url or btn.login_url:
                                         if (
                                             action.webapp_button_text is None
-                                            or action.webapp_button_text in (btn.text or "")
+                                            or action.webapp_button_text
+                                            in (btn.text or "")
                                         ):
                                             reply_msg = msg
                                             break
@@ -3312,7 +3333,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     or target_btn.url
                     or (target_btn.login_url.url if target_btn.login_url else None)
                 )
-                full_url = await self._get_webview_url_from_button(reply_msg, target_btn)
+                full_url = await self._get_webview_url_from_button(
+                    reply_msg, target_btn
+                )
                 menu_url = raw_btn_url
                 init_data_raw = parse_qs(urlparse(full_url).fragment).get(
                     "tgWebAppData", [""]
@@ -3320,9 +3343,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.log(f"从内联键盘自动获取 webapp_url: {menu_url}")
             else:
                 # 从 Bot 菜单按钮自动获取 WebApp URL
-                menu_url, init_data_raw = await self._get_webapp_init_data(
-                    _bot_target
-                )
+                menu_url, init_data_raw = await self._get_webapp_init_data(_bot_target)
         except Exception as e:
             self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
             return False
@@ -3366,7 +3387,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     action.auth_init_data_field: init_data,
                 },
             )
-            ad = ar.json()
+            ad = _parse_json_response(ar, "Auth 接口")
+            if ad is None:
+                return False
             jwt_token = _nested(ad, action.auth_token_path)
             if not jwt_token or not ad.get("success"):
                 self.log(f"Auth 失败: HTTP {ar.status_code} {ad}", level="ERROR")
@@ -3379,7 +3402,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     f"{api_base}{action.status_endpoint}",
                     headers={"Authorization": f"Bearer {jwt_token}"},
                 )
-                sd = sr.json()
+                sd = _parse_json_response(sr, "签到状态接口")
+                if sd is None:
+                    return False
                 if _nested(sd, action.status_already_checked_path):
                     self.log("今日已签到，跳过")
                     await self._send_bark_notification(
@@ -3394,7 +3419,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     vc = await http.get(
                         f"{api_base}{action.verification_config_endpoint}"
                     )
-                    vcd = vc.json()
+                    vcd = _parse_json_response(vc, "验证配置接口")
+                    if vcd is None:
+                        vcd = {}
                     ci_vc = vcd.get("checkin") or {}
                     sitekey = ci_vc.get("siteKey") or ci_vc.get("sitekey")
                 except Exception as e:
@@ -3469,11 +3496,22 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 json=body,
                 headers={"Authorization": f"Bearer {jwt_token}"},
             )
-            cid = ci.json()
+            cid = _parse_json_response(ci, "签到接口")
+            if cid is None:
+                await self._send_bark_notification(
+                    action,
+                    "签到失败",
+                    f"签到接口返回了非 JSON 响应: HTTP {ci.status_code}",
+                )
+                return False
             ok = cid.get(action.success_key) == action.success_value
             msg = cid.get(action.message_key, "") if action.message_key else ""
             amt = cid.get(action.amount_key, "") if action.amount_key else ""
-            unit = cid.get(action.currency_unit_key, "") if action.currency_unit_key else ""
+            unit = (
+                cid.get(action.currency_unit_key, "")
+                if action.currency_unit_key
+                else ""
+            )
             balance = cid.get(action.balance_key, "") if action.balance_key else ""
             if ok:
                 # 格式化为：签到成功！+1.28 STARRY（余额: 5.50 STARRY）

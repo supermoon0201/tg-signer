@@ -27,6 +27,7 @@ from tg_signer.config import (
     SessionPanelCheckinAction,
     SignChatV3,
     SignConfigV3,
+    WebAppApiCheckinAction,
     WebViewCheckinAction,
 )
 from tg_signer.core import (
@@ -1420,9 +1421,7 @@ async def test_choose_option_by_text_fetches_latest_edited_message(
 
 
 @pytest.mark.asyncio
-async def test_choose_option_by_text_sends_reply_keyboard_text(
-    monkeypatch, tmp_path
-):
+async def test_choose_option_by_text_sends_reply_keyboard_text(monkeypatch, tmp_path):
     signer = UserSigner(
         task_name="task",
         account="acct",
@@ -2248,6 +2247,121 @@ def test_normal_run_skips_username_resolution_errors_per_chat(signer_factory):
     assert signed_chats == [123456]
 
 
+def test_normal_run_continues_after_unexpected_chat_error(signer_factory):
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer.context = signer.ensure_ctx()
+    signer._validate_sign_at = lambda *_: "0 0 * * *"
+    signer.load_sign_record = lambda: {}
+
+    persisted = []
+
+    def fake_persist(sign_record, sign_date, signed_at):
+        persisted.append((sign_date, signed_at))
+        sign_record[sign_date] = signed_at
+
+    signer.persist_sign_record = fake_persist
+
+    config = SignConfigV3(
+        chats=[
+            SignChatV3(chat_id=111, actions=[SendTextAction(text="first")]),
+            SignChatV3(chat_id=222, actions=[SendTextAction(text="second")]),
+        ],
+        sign_at="0 0 * * *",
+        sign_interval=0,
+    )
+    signer.load_config = lambda _cls: config
+
+    signed_chats = []
+
+    async def fake_sign_a_chat(chat):
+        signed_chats.append(chat.chat_id)
+        if chat.chat_id == 222:
+            raise ValueError("bad response")
+
+    signer.sign_a_chat = fake_sign_a_chat
+    signer.resolve_chat_route_key = AsyncMock(side_effect=lambda chat: chat.chat_id)
+
+    class DummyApp:
+        key = "dummy-app"
+
+        def add_handler(self, *_args, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    signer.app = DummyApp()
+
+    asyncio.run(signer.normal_run(only_once=True))
+
+    assert signed_chats == [111, 222]
+    assert len(persisted) == 1
+
+
+class _WebAppApiClient:
+    def __init__(self, responses):
+        self._responses = responses
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, path, **kwargs):
+        self.calls.append(("POST", path, kwargs))
+        return self._responses[path]
+
+    async def get(self, path, **kwargs):
+        self.calls.append(("GET", path, kwargs))
+        return self._responses[path]
+
+
+@pytest.mark.asyncio
+async def test_webapp_api_checkin_returns_false_on_non_json_auth_response(
+    monkeypatch, signer_factory
+):
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer._send_bark_notification = AsyncMock()
+
+    async def fake_get_me():
+        return SimpleNamespace(id=299612983)
+
+    signer.app = SimpleNamespace(get_me=fake_get_me)
+    signer._get_webapp_init_data = AsyncMock(
+        return_value=(
+            "https://mambo-hachimi.biliblili.uk/telegram-miniapp",
+            "query_id=abc&user=%7B%7D&hash=deadbeef",
+        )
+    )
+
+    client = _WebAppApiClient(
+        {
+            "https://mambo-hachimi.biliblili.uk/api/telegram-miniapp/auth": httpx.Response(
+                200,
+                text="<html>upstream error</html>",
+            ),
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    action = WebAppApiCheckinAction(
+        webapp_url="https://mambo-hachimi.biliblili.uk/telegram-miniapp",
+        two_captcha_api_key="dummy-key",
+    )
+    chat = SignChatV3(chat_id=8056401448, actions=[action])
+
+    ok = await signer._webapp_api_checkin(chat, action)
+
+    assert ok is False
+
+
 @pytest.mark.asyncio
 async def test_auto_renew_emby_skips_when_above_threshold(tmp_path):
     signer = UserSigner(
@@ -2493,4 +2607,3 @@ async def test_session_panel_checkin_fails_on_auth_error(monkeypatch, tmp_path):
     assert ok is False
     # 鉴权失败后不应继续请求 profile/checkin
     assert [p for _, p, _ in client.calls] == ["/api/auth/telegram"]
-
