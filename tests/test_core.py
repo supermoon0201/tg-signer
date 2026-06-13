@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -2421,6 +2421,65 @@ async def test_webapp_api_checkin_falls_back_to_playwright_on_non_json_auth_resp
 
     assert ok is True
     signer._webapp_api_checkin_via_playwright.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_launch_playwright_chromium_prefers_real_chromium_channel(
+    signer_factory,
+):
+    signer = signer_factory()
+
+    class _FakeChromium:
+        def __init__(self):
+            self.calls = []
+
+        async def launch(self, **kwargs):
+            self.calls.append(kwargs)
+            return "browser"
+
+    fake_chromium = _FakeChromium()
+    fake_playwright = SimpleNamespace(chromium=fake_chromium)
+
+    browser = await signer._launch_playwright_chromium(
+        fake_playwright,
+        headless=True,
+    )
+
+    assert browser == "browser"
+    assert fake_chromium.calls == [{"headless": True, "channel": "chromium"}]
+
+
+@pytest.mark.asyncio
+async def test_launch_playwright_chromium_falls_back_when_channel_fails(
+    monkeypatch, signer_factory
+):
+    signer = signer_factory()
+
+    class _FakeChromium:
+        def __init__(self):
+            self.calls = []
+
+        async def launch(self, **kwargs):
+            self.calls.append(kwargs)
+            if "channel" in kwargs:
+                raise RuntimeError("channel missing")
+            return "browser"
+
+    fake_chromium = _FakeChromium()
+    fake_playwright = SimpleNamespace(chromium=fake_chromium)
+    signer.log = MagicMock()
+
+    browser = await signer._launch_playwright_chromium(
+        fake_playwright,
+        headless=True,
+    )
+
+    assert browser == "browser"
+    assert fake_chromium.calls == [
+        {"headless": True, "channel": "chromium"},
+        {"headless": True},
+    ]
+    signer.log.assert_called()
 
 
 @pytest.mark.asyncio

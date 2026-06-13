@@ -2359,6 +2359,31 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         finally:
             await warmup_page.close()
 
+    async def _launch_playwright_chromium(
+        self,
+        playwright: Any,
+        *,
+        headless: bool,
+    ) -> Any:
+        """优先使用真实 Chromium 的 new headless，降低被 Cloudflare 识别的概率。"""
+        channel = os.environ.get("TG_SIGNER_PLAYWRIGHT_CHANNEL", "chromium").strip()
+        launch_kwargs: dict[str, Any] = {
+            "headless": headless,
+        }
+        if channel:
+            launch_kwargs["channel"] = channel
+        try:
+            return await playwright.chromium.launch(**launch_kwargs)
+        except Exception as exc:
+            if not channel:
+                raise
+            self.log(
+                f"Playwright 浏览器 channel={channel!r} 启动失败，"
+                f"回退到默认 Chromium 启动方式: {exc}",
+                level="WARNING",
+            )
+            return await playwright.chromium.launch(headless=headless)
+
     async def _webapp_api_checkin_via_playwright(
         self,
         *,
@@ -2398,7 +2423,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         try:
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(headless=True)
+                browser = await self._launch_playwright_chromium(
+                    playwright,
+                    headless=True,
+                )
                 page = await browser.new_page()
                 try:
                     loop = asyncio.get_running_loop()
