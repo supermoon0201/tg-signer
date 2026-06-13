@@ -1,6 +1,7 @@
 import asyncio
 import json
 import pathlib
+import sys
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
@@ -2349,7 +2350,11 @@ async def test_webapp_api_checkin_returns_false_on_non_json_auth_response(
             ),
         }
     )
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setitem(
+        sys.modules,
+        "curl_cffi",
+        SimpleNamespace(requests=SimpleNamespace(AsyncSession=lambda *a, **k: client)),
+    )
 
     action = WebAppApiCheckinAction(
         webapp_url="https://mambo-hachimi.biliblili.uk/telegram-miniapp",

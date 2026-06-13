@@ -315,6 +315,23 @@ def get_proxy(proxy: str = None):
     return None
 
 
+def proxy_to_url(proxy: dict | None) -> Optional[str]:
+    """将 Telegram 代理配置转换为 HTTP 客户端可复用的代理 URL。"""
+    if not proxy:
+        return None
+    scheme = proxy.get("scheme")
+    hostname = proxy.get("hostname")
+    port = proxy.get("port")
+    if not scheme or not hostname or not port:
+        return None
+    auth = ""
+    if proxy.get("username"):
+        username = parse.quote(str(proxy["username"]), safe="")
+        password = parse.quote(str(proxy.get("password") or ""), safe="")
+        auth = f"{username}:{password}@"
+    return f"{scheme}://{auth}{hostname}:{port}"
+
+
 def get_client(
     name: str = "my_account",
     proxy: dict = None,
@@ -3213,7 +3230,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         """
         from urllib.parse import parse_qs, unquote, urlparse
 
-        import httpx
+        from curl_cffi import requests as curl_requests
 
         # 按点分路径取嵌套字段值，如 'solution.token'
         def _nested(data, path):
@@ -3223,7 +3240,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 data = data.get(key)
             return data
 
-        def _parse_json_response(response: httpx.Response, step_name: str):
+        def _parse_json_response(response: Any, step_name: str):
             # 将非 JSON 响应转成可记录的失败，避免直接抛异常打断整轮签到。
             try:
                 return response.json()
@@ -3365,20 +3382,25 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         telegram_id = me.id
         self.log(f"initData 获取成功，telegramId={telegram_id}，api_base={api_base}")
 
-        # 公共请求头（模拟真实移动端浏览器，避免 Cloudflare 403）
+        # 公共请求头交给浏览器指纹补全，这里只保留业务强依赖头，降低指纹冲突概率。
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-            ),
             "Origin": api_base,
             "Referer": f"{api_base}/",
         }
         if action.extra_headers:
             headers.update(action.extra_headers)
+        session_kwargs = {
+            "timeout": 20,
+            "headers": headers,
+            "impersonate": "chrome",
+            "default_headers": True,
+        }
+        proxy_url = proxy_to_url(self._proxy)
+        if proxy_url:
+            session_kwargs["proxy"] = proxy_url
 
-        async with httpx.AsyncClient(timeout=20, headers=headers) as http:
+        async with curl_requests.AsyncSession(**session_kwargs) as http:
             # Step 2: auth -> JWT
             ar = await http.post(
                 f"{api_base}{action.auth_endpoint}",
@@ -3435,7 +3457,16 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 self.log(
                     f"[2captcha] 第 {attempt}/{action.turnstile_max_attempts} 次尝试解 Turnstile..."
                 )
-                async with httpx.AsyncClient(timeout=30) as cap:
+                captcha_session_kwargs = {
+                    "timeout": 30,
+                    "impersonate": "chrome",
+                    "default_headers": True,
+                }
+                if proxy_url:
+                    captcha_session_kwargs["proxy"] = proxy_url
+                async with curl_requests.AsyncSession(
+                    **captcha_session_kwargs
+                ) as cap:
                     cr = await cap.post(
                         "https://api.2captcha.com/createTask",
                         json={
@@ -3490,7 +3521,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if verification_token:
             body[action.checkin_token_field] = verification_token
 
-        async with httpx.AsyncClient(timeout=20, headers=headers) as http:
+        async with curl_requests.AsyncSession(**session_kwargs) as http:
             ci = await http.post(
                 f"{api_base}{action.checkin_endpoint}",
                 json=body,

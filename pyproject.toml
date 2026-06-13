@@ -25,6 +25,7 @@ dependencies = [
     "json_repair",
     "typing-extensions",
     "httpx",
+    "curl_cffi",
     "Pillow",
     "opencv-python-headless",
 ]
