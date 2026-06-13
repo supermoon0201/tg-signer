@@ -2357,7 +2357,34 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 browser = await playwright.chromium.launch(headless=True)
                 page = await browser.new_page()
                 try:
+                    loop = asyncio.get_running_loop()
+                    auth_future = loop.create_future()
+
+                    async def on_response(resp):
+                        if action.auth_endpoint not in resp.url:
+                            return
+                        if auth_future.done():
+                            return
+                        payload = None
+                        text = None
+                        try:
+                            payload = await resp.json()
+                        except Exception:
+                            try:
+                                text = await resp.text()
+                            except Exception:
+                                text = None
+                        auth_future.set_result(
+                            {
+                                "status": resp.status,
+                                "url": resp.url,
+                                "json": payload,
+                                "text": text,
+                            }
+                        )
+
                     await page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+                    page.on("response", on_response)
                     self.log("HTTP 方案被 Cloudflare 拦截，切换到 Playwright 回退。")
                     await page.goto(
                         browser_url,
@@ -2377,16 +2404,14 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     ):
                         return False
 
-                    auth_result = await self._playwright_fetch_json(
-                        page,
-                        "POST",
-                        f"{api_base}{action.auth_endpoint}",
-                        headers=headers,
-                        payload={
-                            action.auth_telegram_id_field: telegram_id,
-                            action.auth_init_data_field: init_data,
-                        },
-                    )
+                    try:
+                        auth_result = await asyncio.wait_for(auth_future, timeout=15)
+                    except TimeoutError:
+                        self.log(
+                            "Playwright 未在页面初始化阶段捕获到 Auth 接口响应。",
+                            level="ERROR",
+                        )
+                        return False
                     auth_payload = auth_result.get("json")
                     if not isinstance(auth_payload, dict):
                         body = (auth_result.get("text") or "").strip()
@@ -2434,7 +2459,40 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             )
                             return True
 
+                    sitekey = action.turnstile_sitekey
+                    if not sitekey:
+                        verification_result = await self._playwright_fetch_json(
+                            page,
+                            "GET",
+                            f"{api_base}{action.verification_config_endpoint}",
+                            headers=auth_headers,
+                        )
+                        verification_payload = verification_result.get("json")
+                        if isinstance(verification_payload, dict):
+                            ci_vc = verification_payload.get("checkin") or {}
+                            sitekey = ci_vc.get("siteKey") or ci_vc.get("sitekey")
+
                     body: dict[str, Any] = {}
+                    if sitekey:
+                        if not api_key:
+                            self.log(
+                                "Playwright 回退流程缺少 2captcha API Key，无法继续处理签到。",
+                                level="ERROR",
+                            )
+                            return False
+                        self.log("Playwright 正在为签到接口准备 Turnstile token。")
+                        solution = await self._solve_twocaptcha_turnstile(
+                            api_key=api_key,
+                            website_url=page.url,
+                            website_key=sitekey,
+                            action=None,
+                            c_data=None,
+                            chl_page_data=None,
+                            timeout_seconds=action.turnstile_single_timeout,
+                            poll_interval_seconds=action.turnstile_poll_interval,
+                        )
+                        body[action.checkin_token_field] = solution["token"]
+
                     checkin_result = await self._playwright_fetch_json(
                         page,
                         "POST",
