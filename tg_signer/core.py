@@ -2176,6 +2176,265 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         )
         return "blocked"
 
+    async def _playwright_fetch_json(
+        self,
+        page: Any,
+        method: str,
+        url: str,
+        headers: Optional[dict[str, str]] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """在浏览器上下文中执行 fetch，复用 Cloudflare 放行后的 cookie 与指纹。"""
+        return await page.evaluate(
+            """async ({ method, url, headers, payload }) => {
+                const options = {
+                    method,
+                    headers: headers || {},
+                    credentials: "include",
+                };
+                if (payload !== undefined && payload !== null) {
+                    options.body = JSON.stringify(payload);
+                }
+                const response = await fetch(url, options);
+                const text = await response.text();
+                let json = null;
+                try {
+                    json = JSON.parse(text);
+                } catch (error) {
+                    json = null;
+                }
+                return {
+                    status: response.status,
+                    url: response.url,
+                    text,
+                    json,
+                };
+            }""",
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "payload": payload,
+            },
+        )
+
+    async def _ensure_playwright_turnstile_ready(
+        self, page: Any, api_key: Optional[str], timeout_seconds: int
+    ) -> bool:
+        """处理 Playwright 回退流程中的页面级 Turnstile。"""
+        if not await self._is_turnstile_visible(page):
+            return True
+
+        self.log("Playwright 回退流程检测到 Cloudflare Turnstile。")
+        auto_clicked = await self._click_turnstile_checkbox(
+            page, timeout_seconds=min(timeout_seconds, 15)
+        )
+        if auto_clicked and await self._wait_for_turnstile_passed(page, timeout_seconds):
+            self.log("Playwright 已自动通过 Turnstile。")
+            return True
+
+        if not api_key:
+            self.log(
+                "Playwright 回退流程缺少 2captcha API Key，无法继续处理 Turnstile。",
+                level="ERROR",
+            )
+            return False
+
+        compat_action = type(
+            "PlaywrightTurnstileAction",
+            (),
+            {
+                "two_captcha_api_key": api_key,
+                "captcha_poll_interval": 5,
+                "turnstile_timeout": timeout_seconds,
+            },
+        )()
+        solved = await self._solve_turnstile_with_2captcha(compat_action, page)
+        if solved:
+            self.log("Playwright 已通过 2captcha 处理 Turnstile。")
+            return True
+        self.log("Playwright 回退流程未能通过 Turnstile。", level="ERROR")
+        return False
+
+    async def _webapp_api_checkin_via_playwright(
+        self,
+        *,
+        action: "WebAppApiCheckinAction",
+        browser_url: str,
+        api_base: str,
+        init_data: str,
+        telegram_id: int,
+        headers: dict[str, str],
+    ) -> bool:
+        """当 HTTP 客户端被 Cloudflare 拦截时，回退到真实浏览器上下文。"""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            self.log(
+                "缺少 playwright 依赖，无法执行 WebApp API 的浏览器回退。"
+                "请安装 `playwright` 并执行 `playwright install chromium`。",
+                level="ERROR",
+            )
+            return False
+
+        def _nested(data: dict[str, Any], path: str) -> Any:
+            current: Any = data
+            for key in path.split("."):
+                if not isinstance(current, dict):
+                    return None
+                current = current.get(key)
+            return current
+
+        api_key = (
+            action.two_captcha_api_key
+            or os.environ.get("TWOCAPTCHA_API_KEY")
+            or os.environ.get("TWO_CAPTCHA_API_KEY")
+            or ""
+        )
+        timeout_seconds = max(action.turnstile_single_timeout, 30)
+
+        try:
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await browser.new_page()
+                try:
+                    await page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+                    self.log("HTTP 方案被 Cloudflare 拦截，切换到 Playwright 回退。")
+                    await page.goto(
+                        browser_url,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_seconds * 1000,
+                    )
+                    if not await self._ensure_playwright_turnstile_ready(
+                        page, api_key or None, timeout_seconds
+                    ):
+                        return False
+
+                    auth_result = await self._playwright_fetch_json(
+                        page,
+                        "POST",
+                        f"{api_base}{action.auth_endpoint}",
+                        headers=headers,
+                        payload={
+                            action.auth_telegram_id_field: telegram_id,
+                            action.auth_init_data_field: init_data,
+                        },
+                    )
+                    auth_payload = auth_result.get("json")
+                    if not isinstance(auth_payload, dict):
+                        body = (auth_result.get("text") or "").strip()
+                        if len(body) > 500:
+                            body = f"{body[:500]}..."
+                        self.log(
+                            "Playwright Auth 接口仍返回非 JSON 响应: "
+                            f"HTTP {auth_result.get('status')}, body={body or '<empty>'}",
+                            level="ERROR",
+                        )
+                        return False
+
+                    jwt_token = _nested(auth_payload, action.auth_token_path)
+                    if not jwt_token or not auth_payload.get("success"):
+                        self.log(
+                            f"Playwright Auth 失败: HTTP {auth_result.get('status')} {auth_payload}",
+                            level="ERROR",
+                        )
+                        return False
+                    self.log("Playwright Auth 成功，JWT 已获取")
+
+                    auth_headers = {
+                        **headers,
+                        "Authorization": f"Bearer {jwt_token}",
+                    }
+
+                    if action.status_endpoint:
+                        status_result = await self._playwright_fetch_json(
+                            page,
+                            "GET",
+                            f"{api_base}{action.status_endpoint}",
+                            headers=auth_headers,
+                        )
+                        status_payload = status_result.get("json")
+                        if not isinstance(status_payload, dict):
+                            self.log(
+                                "Playwright 签到状态接口返回非 JSON，无法判定签到状态。",
+                                level="ERROR",
+                            )
+                            return False
+                        if _nested(status_payload, action.status_already_checked_path):
+                            self.log("今日已签到，跳过")
+                            await self._send_bark_notification(
+                                action, "签到通知", "今日已签到，跳过"
+                            )
+                            return True
+
+                    body: dict[str, Any] = {}
+                    checkin_result = await self._playwright_fetch_json(
+                        page,
+                        "POST",
+                        f"{api_base}{action.checkin_endpoint}",
+                        headers=auth_headers,
+                        payload=body,
+                    )
+                    checkin_payload = checkin_result.get("json")
+                    if not isinstance(checkin_payload, dict):
+                        self.log(
+                            "Playwright 签到接口返回非 JSON，无法判定签到结果。",
+                            level="ERROR",
+                        )
+                        return False
+
+                    ok = (
+                        checkin_payload.get(action.success_key) == action.success_value
+                    )
+                    msg = (
+                        checkin_payload.get(action.message_key, "")
+                        if action.message_key
+                        else ""
+                    )
+                    amt = (
+                        checkin_payload.get(action.amount_key, "")
+                        if action.amount_key
+                        else ""
+                    )
+                    unit = (
+                        checkin_payload.get(action.currency_unit_key, "")
+                        if action.currency_unit_key
+                        else ""
+                    )
+                    balance = (
+                        checkin_payload.get(action.balance_key, "")
+                        if action.balance_key
+                        else ""
+                    )
+                    if ok:
+                        reward_str = f"+{amt} {unit}".strip() if amt else ""
+                        balance_str = f"{balance} {unit}".strip() if balance else ""
+                        success_text = "签到成功！"
+                        if reward_str:
+                            success_text += f" {reward_str}"
+                        if balance_str:
+                            success_text += f"（余额: {balance_str}）"
+                        if msg and msg not in success_text:
+                            success_text += f" — {msg}"
+                        self.log(success_text)
+                        await self._send_bark_notification(
+                            action, "签到通知", success_text
+                        )
+                        return True
+
+                    fail_text = (
+                        "Playwright 签到接口返回失败: "
+                        f"HTTP {checkin_result.get('status')} {checkin_payload}"
+                    )
+                    self.log(fail_text, level="ERROR")
+                    await self._send_bark_notification(action, "签到失败", fail_text)
+                    return False
+                finally:
+                    await browser.close()
+        except Exception as exc:
+            self.log(f"Playwright 回退流程失败: {exc}", level="ERROR")
+            return False
+
     async def _maybe_solve_webapp_captcha(
         self, action: OpenWebAppByTextAction, page: Any
     ) -> bool:
@@ -3221,7 +3480,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ) -> bool:
         """WebApp initData -> JWT -> 2captcha Turnstile -> API 签到。
 
-        无需 Playwright，纯 HTTP 调用流程：
+        默认优先使用 HTTP 客户端；若 auth 被 Cloudflare 拦截，
+        则自动回退到 Playwright 浏览器上下文继续执行。
         1. 通过 Bot 菜单按钮或指定 URL 获取带 initData 的 WebView URL
         2. 调 auth 接口换取 JWT
         3. 检查今日是否已签（可选）
@@ -3270,6 +3530,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         # Step 1: 获取 WebApp URL 与 initData
         # bot_peer 标识：优先用 bot_username，否则用 chat.chat_id
         _bot_target = action.bot_username or chat.chat_id
+        browser_url = None
         try:
             if action.webapp_url:
                 # 直接提供了 webapp_url，通过 RequestWebView 获取含 initData 的真实 URL
@@ -3285,6 +3546,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     )
                 )
                 menu_url = action.webapp_url
+                browser_url = auth_result.url or action.webapp_url
                 init_data_raw = parse_qs(urlparse(auth_result.url).fragment).get(
                     "tgWebAppData", [""]
                 )[0]
@@ -3354,6 +3616,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     reply_msg, target_btn
                 )
                 menu_url = raw_btn_url
+                browser_url = full_url or raw_btn_url
                 init_data_raw = parse_qs(urlparse(full_url).fragment).get(
                     "tgWebAppData", [""]
                 )[0]
@@ -3361,6 +3624,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             else:
                 # 从 Bot 菜单按钮自动获取 WebApp URL
                 menu_url, init_data_raw = await self._get_webapp_init_data(_bot_target)
+                browser_url = menu_url
         except Exception as e:
             self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
             return False
@@ -3411,6 +3675,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             )
             ad = _parse_json_response(ar, "Auth 接口")
             if ad is None:
+                if browser_url:
+                    return await self._webapp_api_checkin_via_playwright(
+                        action=action,
+                        browser_url=browser_url,
+                        api_base=api_base,
+                        init_data=init_data,
+                        telegram_id=telegram_id,
+                        headers=headers,
+                    )
                 return False
             jwt_token = _nested(ad, action.auth_token_path)
             if not jwt_token or not ad.get("success"):

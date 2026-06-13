@@ -2334,12 +2334,17 @@ async def test_webapp_api_checkin_returns_false_on_non_json_auth_response(
     async def fake_get_me():
         return SimpleNamespace(id=299612983)
 
-    signer.app = SimpleNamespace(get_me=fake_get_me)
-    signer._get_webapp_init_data = AsyncMock(
-        return_value=(
-            "https://mambo-hachimi.biliblili.uk/telegram-miniapp",
-            "query_id=abc&user=%7B%7D&hash=deadbeef",
-        )
+    signer.app = SimpleNamespace(
+        get_me=fake_get_me,
+        resolve_peer=AsyncMock(return_value="peer"),
+        invoke=AsyncMock(
+            return_value=SimpleNamespace(
+                url=(
+                    "https://mambo-hachimi.biliblili.uk/telegram-miniapp"
+                    "#tgWebAppData=query_id%3Dabc%26user%3D%257B%257D%26hash%3Ddeadbeef"
+                )
+            )
+        ),
     )
 
     client = _WebAppApiClient(
@@ -2365,6 +2370,57 @@ async def test_webapp_api_checkin_returns_false_on_non_json_auth_response(
     ok = await signer._webapp_api_checkin(chat, action)
 
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_webapp_api_checkin_falls_back_to_playwright_on_non_json_auth_response(
+    monkeypatch, signer_factory
+):
+    signer = signer_factory()
+    signer.user = SimpleNamespace(id=1)
+    signer._send_bark_notification = AsyncMock()
+
+    async def fake_get_me():
+        return SimpleNamespace(id=299612983)
+
+    signer.app = SimpleNamespace(
+        get_me=fake_get_me,
+        resolve_peer=AsyncMock(return_value="peer"),
+        invoke=AsyncMock(
+            return_value=SimpleNamespace(
+                url=(
+                    "https://mambo-hachimi.biliblili.uk/telegram-miniapp"
+                    "#tgWebAppData=query_id%3Dabc%26user%3D%257B%257D%26hash%3Ddeadbeef"
+                )
+            )
+        ),
+    )
+
+    client = _WebAppApiClient(
+        {
+            "https://mambo-hachimi.biliblili.uk/api/telegram-miniapp/auth": httpx.Response(
+                403,
+                text="<html>cloudflare</html>",
+            ),
+        }
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "curl_cffi",
+        SimpleNamespace(requests=SimpleNamespace(AsyncSession=lambda *a, **k: client)),
+    )
+    signer._webapp_api_checkin_via_playwright = AsyncMock(return_value=True)
+
+    action = WebAppApiCheckinAction(
+        webapp_url="https://mambo-hachimi.biliblili.uk/telegram-miniapp",
+        two_captcha_api_key="dummy-key",
+    )
+    chat = SignChatV3(chat_id=8056401448, actions=[action])
+
+    ok = await signer._webapp_api_checkin(chat, action)
+
+    assert ok is True
+    signer._webapp_api_checkin_via_playwright.assert_awaited_once()
 
 
 @pytest.mark.asyncio

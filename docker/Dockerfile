@@ -9,6 +9,7 @@ FROM python:3.12-slim-bookworm
 ARG TZ=Asia/Shanghai
 ENV TZ=${TZ}
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY --from=builder /build/*.whl /tmp/
 
 RUN apt-get update && \
@@ -18,6 +19,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install /tmp/*.whl && \
-    pip install -U "tg-signer[tgcrypto]"
+    pip install -U "tg-signer[tgcrypto]" playwright && \
+    python -m playwright install --with-deps chromium
 
 WORKDIR /opt/tg-signer
