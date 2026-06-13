@@ -2424,6 +2424,134 @@ async def test_webapp_api_checkin_falls_back_to_playwright_on_non_json_auth_resp
 
 
 @pytest.mark.asyncio
+async def test_webapp_api_checkin_via_playwright_active_auth_fallback(
+    monkeypatch, signer_factory
+):
+    signer = signer_factory()
+    signer._send_bark_notification = AsyncMock()
+    signer._ensure_playwright_turnstile_ready = AsyncMock(return_value=True)
+    signer._warmup_playwright_cloudflare = AsyncMock(return_value=True)
+
+    class _FakeContext:
+        async def cookies(self, _url):
+            return [{"name": "cf_clearance", "value": "ok"}]
+
+    class _FakePage:
+        def __init__(self):
+            self.context = _FakeContext()
+            self.url = "https://mambo-hachimi.biliblili.uk/telegram-miniapp"
+            self.init_scripts = []
+            self.handlers = {}
+            self.fetch_calls = []
+
+        async def add_init_script(self, script):
+            self.init_scripts.append(script)
+
+        def on(self, name, handler):
+            self.handlers[name] = handler
+
+        async def goto(self, *args, **kwargs):
+            return None
+
+        async def wait_for_load_state(self, *args, **kwargs):
+            return None
+
+        async def evaluate(self, _script, data):
+            self.fetch_calls.append(data)
+            url = data["url"]
+            if url.endswith("/api/telegram-miniapp/auth"):
+                return {
+                    "status": 200,
+                    "url": url,
+                    "text": '{"success":true,"token":"jwt"}',
+                    "json": {"success": True, "token": "jwt"},
+                }
+            if url.endswith("/api/checkin/status"):
+                return {
+                    "status": 200,
+                    "url": url,
+                    "text": '{"hasCheckedInToday":true}',
+                    "json": {"hasCheckedInToday": True},
+                }
+            raise AssertionError(f"unexpected fetch url: {url}")
+
+    class _FakeBrowser:
+        def __init__(self, page):
+            self._page = page
+            self.closed = False
+
+        async def new_page(self):
+            return self._page
+
+        async def close(self):
+            self.closed = True
+
+    class _FakeChromium:
+        def __init__(self, browser):
+            self._browser = browser
+
+        async def launch(self, headless=True):
+            return self._browser
+
+    class _FakePlaywright:
+        def __init__(self, browser):
+            self.chromium = _FakeChromium(browser)
+
+    class _FakePlaywrightContext:
+        def __init__(self, browser):
+            self._playwright = _FakePlaywright(browser)
+
+        async def __aenter__(self):
+            return self._playwright
+
+        async def __aexit__(self, *args):
+            return False
+
+    fake_page = _FakePage()
+    fake_browser = _FakeBrowser(fake_page)
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.async_api",
+        SimpleNamespace(
+            async_playwright=lambda: _FakePlaywrightContext(fake_browser)
+        ),
+    )
+
+    async def fake_wait_for(awaitable, timeout):
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    action = WebAppApiCheckinAction(
+        webapp_url="https://mambo-hachimi.biliblili.uk/telegram-miniapp",
+        two_captcha_api_key="dummy-key",
+    )
+
+    ok = await signer._webapp_api_checkin_via_playwright(
+        action=action,
+        browser_url=(
+            "https://mambo-hachimi.biliblili.uk/telegram-miniapp"
+            "#tgWebAppData=query_id%3Dabc%26user%3D%257B%257D%26hash%3Ddeadbeef"
+        ),
+        api_base="https://mambo-hachimi.biliblili.uk",
+        init_data="query_id=abc&user=%7B%7D&hash=deadbeef",
+        telegram_id=299612983,
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "https://mambo-hachimi.biliblili.uk",
+            "Referer": "https://mambo-hachimi.biliblili.uk/",
+        },
+    )
+
+    assert ok is True
+    assert any("window.Telegram" in script for script in fake_page.init_scripts)
+    assert any(
+        call["url"].endswith("/api/telegram-miniapp/auth")
+        for call in fake_page.fetch_calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_renew_emby_skips_when_above_threshold(tmp_path):
     signer = UserSigner(
         task_name="task",

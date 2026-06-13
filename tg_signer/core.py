@@ -2218,6 +2218,50 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             },
         )
 
+    def _build_playwright_telegram_init_script(
+        self, *, init_data: str, telegram_id: int
+    ) -> str:
+        """为普通浏览器页注入最小 Telegram WebApp 运行时。"""
+        init_data_json = json.dumps(init_data, ensure_ascii=False)
+        telegram_id_json = json.dumps(telegram_id)
+        return f"""
+(() => {{
+  const initData = {init_data_json};
+  const telegramId = {telegram_id_json};
+  const noop = () => {{}};
+  const parseInitDataUnsafe = () => ({{
+    user: {{ id: telegramId }},
+    query_id: null,
+  }});
+
+  const webApp = {{
+    initData,
+    initDataUnsafe: parseInitDataUnsafe(),
+    version: "7.7",
+    platform: "ios",
+    colorScheme: "light",
+    themeParams: {{}},
+    isExpanded: true,
+    viewportHeight: window.innerHeight,
+    viewportStableHeight: window.innerHeight,
+    ready: noop,
+    expand: noop,
+    close: noop,
+    sendData: noop,
+    enableClosingConfirmation: noop,
+    disableClosingConfirmation: noop,
+    setHeaderColor: noop,
+    setBackgroundColor: noop,
+    onEvent: noop,
+    offEvent: noop,
+  }};
+
+  const telegram = window.Telegram || {{}};
+  telegram.WebApp = Object.assign(webApp, telegram.WebApp || {{}});
+  window.Telegram = telegram;
+}})();
+"""
+
     async def _has_context_cookie(
         self, page: Any, cookie_name: str, url: str
     ) -> bool:
@@ -2384,6 +2428,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         )
 
                     await page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+                    await page.add_init_script(
+                        self._build_playwright_telegram_init_script(
+                            init_data=init_data,
+                            telegram_id=telegram_id,
+                        )
+                    )
                     page.on("response", on_response)
                     self.log("HTTP 方案被 Cloudflare 拦截，切换到 Playwright 回退。")
                     await page.goto(
@@ -2408,10 +2458,20 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                         auth_result = await asyncio.wait_for(auth_future, timeout=15)
                     except TimeoutError:
                         self.log(
-                            "Playwright 未在页面初始化阶段捕获到 Auth 接口响应。",
-                            level="ERROR",
+                            "Playwright 未在页面初始化阶段捕获到 Auth 接口响应，"
+                            "改为在浏览器上下文主动补发 Auth 请求。",
+                            level="WARNING",
                         )
-                        return False
+                        auth_result = await self._playwright_fetch_json(
+                            page,
+                            "POST",
+                            f"{api_base}{action.auth_endpoint}",
+                            headers=headers,
+                            payload={
+                                action.auth_telegram_id_field: telegram_id,
+                                action.auth_init_data_field: init_data,
+                            },
+                        )
                     auth_payload = auth_result.get("json")
                     if not isinstance(auth_payload, dict):
                         body = (auth_result.get("text") or "").strip()
