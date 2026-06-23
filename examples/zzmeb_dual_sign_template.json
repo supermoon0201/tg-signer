@@ -1,0 +1,46 @@
+{
+  "_version": 3,
+  "_template_name": "zzmeb_dual_sign_template",
+  "_template_desc": "娘口三三 / zzmeb_bot 双签模板：先走 Bot 按钮签到，再走 MiniApp session 签到。",
+  "_usage": [
+    "将本文件复制到 <workdir>/signs/<task_name>/config.json",
+    "如 Bot 用户名、chat_id 或按钮文本不同，请按实际情况修改",
+    "本模板适用于 t.me/<bot>/miniapp 这类 Bot App short name MiniApp 入口"
+  ],
+  "chats": [
+    {
+      "chat_id": 8922873363,
+      "name": "娘口三三 (@zzmeb_bot)",
+      "delete_after": null,
+      "actions": [
+        {
+          "action": 1,
+          "text": "/start"
+        },
+        {
+          "action": 3,
+          "text": "🎯 签到"
+        },
+        {
+          "action": 10,
+          "bot_username": "zzmeb_bot",
+          "webapp_short_name": "miniapp",
+          "auth_endpoint": "/api/auth/telegram",
+          "profile_endpoint": "/api/miniapp/bootstrap",
+          "checkin_endpoint": "/api/user/checkin",
+          "init_data_field": "initData",
+          "already_signed_path": "data.profile.checkedInToday",
+          "success_key": "ok",
+          "success_value": true,
+          "message_key": "message",
+          "extra_headers": null,
+          "bark_enabled": false
+        }
+      ],
+      "action_interval": 1.0
+    }
+  ],
+  "sign_at": "08:00:00",
+  "random_seconds": 0,
+  "sign_interval": 1
+}

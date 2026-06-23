@@ -370,6 +370,9 @@ class SessionPanelCheckinAction(SignAction):
         SupportAction.SESSION_PANEL_CHECKIN
     )
     bot_username: str  # bot 的用户名，用于获取 WebApp 菜单按钮与 initData
+    webapp_short_name: Optional[str] = (
+        None  # Bot App short name，适用于 t.me/<bot>/<short_name> 形式的 MiniApp
+    )
     api_base_url: Optional[str] = None  # API 基础URL，留空则从菜单按钮URL推导
     auth_endpoint: str = "/api/auth/telegram"  # 用 initData 换 session 的接口
     profile_endpoint: str = "/api/user/profile"  # 查询用户资料(含已签状态)的接口

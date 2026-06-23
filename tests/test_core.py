@@ -2755,7 +2755,7 @@ def _make_session_panel_signer(tmp_path, monkeypatch):
         workdir=tmp_path / ".signer",
     )
 
-    async def fake_init_data(bot_username):
+    async def fake_init_data(bot_username, webapp_short_name=None):
         return "https://panel.example.com/", "query_id=abc&user=%7B%7D&hash=deadbeef"
 
     monkeypatch.setattr(signer, "_get_webapp_init_data", fake_init_data)
@@ -2855,3 +2855,77 @@ async def test_session_panel_checkin_fails_on_auth_error(monkeypatch, tmp_path):
     assert ok is False
     # 鉴权失败后不应继续请求 profile/checkin
     assert [p for _, p, _ in client.calls] == ["/api/auth/telegram"]
+
+
+@pytest.mark.asyncio
+async def test_get_webapp_init_data_supports_bot_app_short_name(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    captured = {}
+
+    async def fake_invoke(query):
+        name = type(query).__name__
+        captured["query_name"] = name
+        if name == "RequestAppWebView":
+            captured["app_name"] = type(query.app).__name__
+            captured["short_name"] = getattr(query.app, "short_name", None)
+            return SimpleNamespace(
+                url=(
+                    "https://miniapp.example.com/"
+                    "#tgWebAppData=query_id%3Dabc%26user%3D%257B%257D%26hash%3Ddeadbeef"
+                )
+            )
+        raise AssertionError(f"unexpected invoke: {name}")
+
+    signer.app = SimpleNamespace(
+        resolve_peer=AsyncMock(return_value="bot-peer"),
+        invoke=AsyncMock(side_effect=fake_invoke),
+    )
+
+    entry_url, init_data = await signer._get_webapp_init_data(
+        "zzmeb_bot", webapp_short_name="miniapp"
+    )
+
+    assert entry_url == (
+        "https://miniapp.example.com/"
+        "#tgWebAppData=query_id%3Dabc%26user%3D%257B%257D%26hash%3Ddeadbeef"
+    )
+    assert init_data == "query_id=abc&user=%7B%7D&hash=deadbeef"
+    assert captured["query_name"] == "RequestAppWebView"
+    assert captured["app_name"] == "InputBotAppShortName"
+    assert captured["short_name"] == "miniapp"
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_passes_short_name_to_init_data_loader(
+    monkeypatch, tmp_path
+):
+    signer = _make_session_panel_signer(tmp_path, monkeypatch)
+    signer._get_webapp_init_data = AsyncMock(
+        return_value=("https://miniapp.example.com/", "query_id=abc")
+    )
+    action = SessionPanelCheckinAction(
+        bot_username="zzmeb_bot",
+        webapp_short_name="miniapp",
+    )
+
+    client = _SessionPanelClient(
+        {
+            "/api/auth/telegram": {"ok": True, "message": "授权成功"},
+            "/api/user/profile": {
+                "ok": True,
+                "data": {"profile": {"checkedInToday": True, "score": 79}},
+            },
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await signer._session_panel_checkin(action)
+
+    assert ok is True
+    signer._get_webapp_init_data.assert_awaited_once_with("zzmeb_bot", "miniapp")

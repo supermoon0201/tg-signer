@@ -288,6 +288,43 @@ tg-signer run linuxdo
 2. WebApp 内图片验证码，使用 2Captcha OCR 识别后回填
 3. Cloudflare Turnstile，人机验证通过后再继续点击业务按钮
 
+#### Bot App short name MiniApp（如 `t.me/<bot>/miniapp`）
+
+部分 Bot 的小程序入口不是菜单按钮，也不是标准 `web_app` 按钮，而是
+`t.me/<bot>/<short_name>` 形式的 Bot App short name 链接。
+
+对于这类站点，如果你使用 `面板接口签到(session)`（动作 10），可以额外配置：
+
+- `bot_username`：Bot 用户名
+- `webapp_short_name`：例如 `miniapp`
+
+例如娘口三三可使用：
+
+```json
+{
+  "action": 10,
+  "bot_username": "zzmeb_bot",
+  "webapp_short_name": "miniapp",
+  "profile_endpoint": "/api/miniapp/bootstrap",
+  "already_signed_path": "data.profile.checkedInToday",
+  "checkin_endpoint": "/api/user/checkin"
+}
+```
+
+这类站点会先通过 Telegram `initData` 调 `/api/auth/telegram` 建立会话，再调
+业务接口完成签到。
+
+仓库内也提供了可直接复用的模板文件：
+
+- `examples/zzmeb_dual_sign_template.json`
+
+该模板适用于：
+
+- 先点击 Bot 内 `🎯 签到`
+- 再进入 `t.me/<bot>/miniapp` 对应的 MiniApp session 签到
+- 使用 `/api/miniapp/bootstrap` 判断是否已签
+- 使用 `/api/user/checkin` 执行用户中心签到
+
 #### Cloudflare Turnstile / 2Captcha
 
 部分站点会在 WebApp 中弹出 Cloudflare Turnstile，例如：

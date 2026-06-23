@@ -289,6 +289,44 @@ This action also supports:
 - image captchas solved by 2Captcha OCR
 - Cloudflare Turnstile
 
+#### Bot App short name MiniApp (for example `t.me/<bot>/miniapp`)
+
+Some bots expose their MiniApp through a Bot App short-name link instead of a
+menu button or a standard `web_app` button.
+
+For this kind of site, when using `Session panel check-in (session)` (action 10),
+you can additionally configure:
+
+- `bot_username`: the bot username
+- `webapp_short_name`: for example `miniapp`
+
+Example for zzmeb:
+
+```json
+{
+  "action": 10,
+  "bot_username": "zzmeb_bot",
+  "webapp_short_name": "miniapp",
+  "profile_endpoint": "/api/miniapp/bootstrap",
+  "already_signed_path": "data.profile.checkedInToday",
+  "checkin_endpoint": "/api/user/checkin"
+}
+```
+
+For these sites, the flow is usually: exchange Telegram `initData` via
+`/api/auth/telegram`, then call the business API with the established session.
+
+A reusable template file is also included in the repository:
+
+- `examples/zzmeb_dual_sign_template.json`
+
+This template is suitable when you want to:
+
+- click the Bot-side `🎯 Check-in` button first
+- then run MiniApp session check-in through `t.me/<bot>/miniapp`
+- use `/api/miniapp/bootstrap` to detect the already-signed state
+- use `/api/user/checkin` for the MiniApp user-center check-in
+
 #### Cloudflare Turnstile / 2Captcha
 
 For WebApps that show Cloudflare Turnstile, configure:

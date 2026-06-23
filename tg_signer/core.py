@@ -3523,15 +3523,46 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return cur
 
     async def _get_webapp_init_data(
-        self, bot_username: str
+        self, bot_username: str, webapp_short_name: Optional[str] = None
     ) -> tuple[Optional[str], Optional[str]]:
-        """获取 bot 的 WebApp 菜单按钮 URL 与 initData(tgWebAppData)。"""
+        """获取 bot 的 WebApp 入口 URL 与 initData(tgWebAppData)。"""
         from urllib.parse import parse_qs, urlparse
 
-        from pyrogram.raw.functions.messages import RequestWebView
+        from pyrogram.raw.functions.messages import RequestAppWebView, RequestWebView
         from pyrogram.raw.functions.users import GetFullUser
+        from pyrogram.raw.types import InputBotAppShortName
 
         bot_peer = await self.app.resolve_peer(bot_username)
+        if webapp_short_name:
+            try:
+                input_app = InputBotAppShortName(
+                    bot_id=bot_peer,
+                    short_name=webapp_short_name,
+                )
+                auth = await self.app.invoke(
+                    RequestAppWebView(
+                        peer=bot_peer,
+                        app=input_app,
+                        platform="ios",
+                    )
+                )
+                auth_url = auth.url
+                init_data = parse_qs(urlparse(auth_url).fragment).get(
+                    "tgWebAppData", [""]
+                )[0]
+                if init_data:
+                    return auth_url, init_data
+                self.log(
+                    f"Bot {bot_username} short_name={webapp_short_name} 未返回 tgWebAppData，"
+                    "将继续尝试菜单按钮",
+                    level="WARNING",
+                )
+            except Exception as e:
+                self.log(
+                    f"通过 Bot App short_name 获取 WebApp initData 失败: {e}",
+                    level="WARNING",
+                )
+
         user_full = await self.app.invoke(GetFullUser(id=bot_peer))
         if (
             not user_full.full_user.bot_info
@@ -3555,7 +3586,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         from urllib.parse import urlparse
 
         try:
-            menu_url, init_data = await self._get_webapp_init_data(action.bot_username)
+            menu_url, init_data = await self._get_webapp_init_data(
+                action.bot_username,
+                action.webapp_short_name,
+            )
         except Exception as e:
             self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
             await self._send_session_panel_bark(
