@@ -2768,6 +2768,7 @@ class _SessionPanelClient:
     def __init__(self, responses):
         self._responses = responses
         self.calls = []
+        self.cookies = {}
 
     async def __aenter__(self):
         return self
@@ -2777,10 +2778,25 @@ class _SessionPanelClient:
 
     def _resp(self, path):
         payload = self._responses[path]
-        return SimpleNamespace(status_code=200, json=lambda: payload)
+        status_code = 200
+        if isinstance(payload, tuple):
+            payload, status_code = payload
+
+        def _json():
+            if isinstance(payload, Exception):
+                raise payload
+            return payload
+
+        return SimpleNamespace(status_code=status_code, json=_json)
 
     async def post(self, path, **kwargs):
         self.calls.append(("POST", path, kwargs.get("json")))
+        if path == "/api/auth/telegram":
+            auth_payload = self._responses[path]
+            if isinstance(auth_payload, tuple):
+                auth_payload = auth_payload[0]
+            if auth_payload == "__set_session_cookie__":
+                self.cookies["session"] = "mock-session"
         return self._resp(path)
 
     async def get(self, path, **kwargs):
@@ -2855,6 +2871,32 @@ async def test_session_panel_checkin_fails_on_auth_error(monkeypatch, tmp_path):
     assert ok is False
     # 鉴权失败后不应继续请求 profile/checkin
     assert [p for _, p, _ in client.calls] == ["/api/auth/telegram"]
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_accepts_cookie_only_auth(monkeypatch, tmp_path):
+    signer = _make_session_panel_signer(tmp_path, monkeypatch)
+    action = SessionPanelCheckinAction(bot_username="zzmeb_bot")
+
+    client = _SessionPanelClient(
+        {
+            "/api/auth/telegram": "__set_session_cookie__",
+            "/api/user/profile": {
+                "ok": True,
+                "data": {"profile": {"checkedInToday": False, "score": 63}},
+            },
+            "/api/user/checkin": {"ok": True, "message": "签到成功，+16 积分"},
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await signer._session_panel_checkin(action)
+
+    assert ok is True
+    paths = [(m, p) for m, p, _ in client.calls]
+    assert ("POST", "/api/auth/telegram") in paths
+    assert ("GET", "/api/user/profile") in paths
+    assert ("POST", "/api/user/checkin") in paths
 
 
 @pytest.mark.asyncio

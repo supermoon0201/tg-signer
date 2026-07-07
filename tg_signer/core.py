@@ -3631,6 +3631,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         init_data: str,
         headers: dict,
     ) -> bool:
+        def _has_session_cookie(client: Any) -> bool:
+            """判断客户端当前是否已经持有会话 cookie。"""
+            cookies = getattr(client, "cookies", None)
+            if cookies is None:
+                return False
+            try:
+                return bool(list(cookies.items()))
+            except Exception:
+                try:
+                    return bool(cookies)
+                except Exception:
+                    return False
+
         async with httpx.AsyncClient(
             base_url=api_base,
             timeout=30.0,
@@ -3645,22 +3658,39 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 )
                 auth_payload = auth_resp.json()
             except Exception as e:
-                self.log(f"面板鉴权请求失败: {e}", level="ERROR")
-                await self._send_session_panel_bark(
-                    action, "失败", f"鉴权请求失败: {e}"
-                )
-                return False
+                auth_payload = None
+                if getattr(auth_resp, "status_code", 0) < 400 and _has_session_cookie(
+                    client
+                ):
+                    # 某些站点会直接下发 session cookie，但响应体不是标准 JSON。
+                    self.log(
+                        f"面板鉴权响应非标准 JSON，但已拿到会话 cookie，继续尝试签到: {e}"
+                    )
+                else:
+                    self.log(f"面板鉴权请求失败: {e}", level="ERROR")
+                    await self._send_session_panel_bark(
+                        action, "失败", f"鉴权请求失败: {e}"
+                    )
+                    return False
 
-            if auth_payload.get(action.success_key) != action.success_value:
-                msg = (
-                    auth_payload.get(action.message_key) if action.message_key else None
-                )
+            auth_ok = False
+            if isinstance(auth_payload, dict):
+                auth_ok = auth_payload.get(action.success_key) == action.success_value
+
+            if auth_ok:
+                self.log("面板鉴权成功，已获取会话")
+            elif _has_session_cookie(client) and getattr(auth_resp, "status_code", 0) < 400:
+                # 兼容只依赖 Set-Cookie 建立会话、但不返回统一 success 字段的站点。
+                self.log("面板鉴权响应未显式声明成功，但已获取会话 cookie，继续尝试签到")
+            else:
+                msg = None
+                if isinstance(auth_payload, dict) and action.message_key:
+                    msg = auth_payload.get(action.message_key)
                 self.log(f"面板鉴权失败: {msg or auth_payload}", level="WARNING")
                 await self._send_session_panel_bark(
                     action, "失败", f"鉴权失败: {msg or auth_payload}"
                 )
                 return False
-            self.log("面板鉴权成功，已获取会话")
 
             # 2) 预检是否今日已签
             if action.already_signed_path:
