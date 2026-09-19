@@ -221,7 +221,7 @@ class SupportAction(int, Enum):
             SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
             SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
             SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
-            SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面选择选项",
+            SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面或目标序列选择选项",
             SupportAction.SESSION_PANEL_CHECKIN: "面板接口签到(session)",
             SupportAction.TGBOT_CHECKIN_WITH_RENEW: "Bot内签到+条件续期",
             SupportAction.WEBAPP_API_CHECKIN: "WebApp API签到(Turnstile)",

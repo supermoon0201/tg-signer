@@ -2,6 +2,10 @@
 
 ## 版本变动日志
 
+### 未发布
+
+- `根据文本题面选择选项` 动作支持按消息中的 Emoji/文本目标序列连续点击 InlineKeyboard 按钮，无需调用大模型
+
 ### 0.9.0
 - 新增 `list-folders` 和 `--from-folder`，支持从 Telegram 普通对话 Folder 加载手动添加的对话
 - 兼容 Kurigram 同步与异步论坛话题解析接口

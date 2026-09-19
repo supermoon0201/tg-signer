@@ -290,6 +290,12 @@ Daily check-in time (time or crontab expression, such as '06:00:00' or '0 6 * * 
 Random time deviation in seconds (default is 0): 300
 ```
 
+### Ordered Emoji Challenge
+
+Action `9: Select an option based on message text or a target sequence` supports ordered Telegram InlineKeyboard challenges. When a message explicitly contains `target sequence`, `target order`, `目标序列`, or `目标顺序`, it extracts matching button Emoji/text after that marker and clicks the buttons from left to right.
+
+This deterministic path does not call the LLM and treats Emoji variants such as `⚪` and `⚪️` as the same button. Regular text questions continue to use the configured LLM.
+
 ### Telegram WebApp Check-in
 
 Use this action flow for bots that require opening a Telegram WebApp and clicking a button inside the page:

@@ -1262,6 +1262,73 @@ async def test_choose_option_by_text_clicks_selected_button(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_choose_option_by_text_clicks_emoji_target_sequence(
+    monkeypatch, tmp_path
+):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    buttons = [
+        InlineKeyboardButton("⚪️", callback_data="egg"),
+        InlineKeyboardButton("😼", callback_data="cat"),
+        InlineKeyboardButton("🤫", callback_data="quiet"),
+        InlineKeyboardButton("☑️", callback_data="check"),
+        InlineKeyboardButton("🎾", callback_data="ball"),
+        InlineKeyboardButton("🔒", callback_data="lock"),
+        InlineKeyboardButton("😢", callback_data="cry"),
+        InlineKeyboardButton("🥶", callback_data="cold"),
+        InlineKeyboardButton("🍑", callback_data="peach"),
+    ]
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        text=(
+            "🤖 人机验证\n"
+            "请在 180 秒内按照下面目标序列从左往右依次点击：\n\n"
+            "🤫 😢 🍑 ⚪ 🔒"
+        ),
+        caption=None,
+        reply_markup=InlineKeyboardMarkup([buttons[0:3], buttons[3:6], buttons[6:9]]),
+    )
+    callback_calls = []
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        return None
+
+    async def fake_latest_message(_message):
+        return message
+
+    def fail_if_ai_is_used():
+        raise AssertionError("Emoji 目标序列不应调用大模型")
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(signer, "get_ai_tools", fail_if_ai_is_used)
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr(signer, "_get_latest_text_choice_message", fake_latest_message)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    ok = await signer._choose_option_by_text(ChooseOptionByTextAction(), message)
+
+    assert ok is True
+    assert callback_calls == [
+        (123, 456, "quiet"),
+        (123, 456, "cry"),
+        (123, 456, "peach"),
+        (123, 456, "egg"),
+        (123, 456, "lock"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp_path):
     signer = UserSigner(
         task_name="task",

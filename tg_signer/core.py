@@ -1670,6 +1670,108 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     def _count_text_choice_placeholders(self, text: str) -> int:
         return sum(text.count(ch) for ch in ("░", "□", "▢", "▁", "_"))
 
+    @staticmethod
+    def _normalize_sequence_button_text(text: str) -> str:
+        return "".join(text.split()).replace("\ufe0e", "").replace("\ufe0f", "")
+
+    def _extract_ordered_button_sequence(
+        self, prompt_text: str, options: list[str]
+    ) -> list[str]:
+        """从明确标注的目标序列中按出现顺序提取按钮文本。"""
+        normalized_prompt = prompt_text.lower()
+        markers = ("目标序列", "目标顺序", "target sequence", "target order")
+        marker_matches = [
+            (normalized_prompt.find(marker), marker)
+            for marker in markers
+            if marker in normalized_prompt
+        ]
+        if not marker_matches:
+            return []
+
+        marker_index, marker = min(marker_matches, key=lambda item: item[0])
+        sequence_text = prompt_text[marker_index + len(marker) :]
+        delimiter_indexes = [
+            sequence_text.find(delimiter)
+            for delimiter in ("：", ":", "\n")
+            if delimiter in sequence_text
+        ]
+        if delimiter_indexes:
+            sequence_text = sequence_text[min(delimiter_indexes) + 1 :]
+        normalized_sequence = self._normalize_sequence_button_text(sequence_text)
+        option_by_token = {
+            self._normalize_sequence_button_text(option): option
+            for option in options
+            if self._normalize_sequence_button_text(option)
+        }
+
+        result = []
+        cursor = 0
+        tokens = sorted(option_by_token, key=len, reverse=True)
+        while cursor < len(normalized_sequence):
+            token = next(
+                (
+                    candidate
+                    for candidate in tokens
+                    if normalized_sequence.startswith(candidate, cursor)
+                ),
+                None,
+            )
+            if token is None:
+                cursor += 1
+                continue
+            result.append(option_by_token[token])
+            cursor += len(token)
+        return result
+
+    async def _click_ordered_button_sequence(
+        self, message: Message, sequence: list[str]
+    ) -> bool:
+        """按目标序列连续点击同一验证消息中的内联按钮。"""
+        current_message = message
+        original_buttons = {
+            self._normalize_sequence_button_text(btn.text): btn
+            for btn in _get_inline_keyboard_buttons(message)
+            if btn.callback_data
+        }
+
+        for index, target in enumerate(sequence, start=1):
+            current_buttons = {
+                self._normalize_sequence_button_text(btn.text): btn
+                for btn in _get_inline_keyboard_buttons(current_message)
+                if btn.callback_data
+            }
+            normalized_target = self._normalize_sequence_button_text(target)
+            target_btn = current_buttons.get(normalized_target) or original_buttons.get(
+                normalized_target
+            )
+            if not target_btn:
+                self.log(f"目标序列中的按钮不存在: {target}", level="WARNING")
+                return False
+
+            self.log(f"按目标序列点击按钮 ({index}/{len(sequence)}): {target_btn.text}")
+            answer = await self.request_callback_answer(
+                self.app,
+                current_message.chat.id,
+                current_message.id,
+                target_btn.callback_data,
+            )
+            if self._has_terminal_sign_text(getattr(answer, "message", None)):
+                return True
+
+            if index == len(sequence):
+                continue
+
+            await asyncio.sleep(0.5)
+            latest_message = await self._get_latest_text_choice_message(current_message)
+            if latest_message is not None:
+                if self._has_terminal_sign_text(
+                    self._message_match_text(latest_message)
+                ):
+                    return True
+                current_message = latest_message
+
+        return True
+
     def _has_terminal_sign_text(self, text: Optional[str]) -> bool:
         normalized_text = self._normalize_match_text(text)
         if not normalized_text:
@@ -3031,6 +3133,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     self._message_match_text(current_message)
                 )
 
+            if isinstance(reply_markup, InlineKeyboardMarkup):
+                ordered_sequence = self._extract_ordered_button_sequence(
+                    prompt_text, list(option_to_btn)
+                )
+                if ordered_sequence:
+                    self.log(
+                        "检测到按钮目标序列，将按顺序点击: "
+                        + " -> ".join(ordered_sequence)
+                    )
+                    return await self._click_ordered_button_sequence(
+                        current_message, ordered_sequence
+                    )
             self.log("检测到文本题面和选项按钮，尝试调用大模型选择选项")
             options = list(option_to_btn)
             placeholder_count = self._count_text_choice_placeholders(prompt_text)
