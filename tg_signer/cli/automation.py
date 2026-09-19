@@ -7,7 +7,7 @@ from click import Group
 
 from tg_signer.automation import UserAutomation
 
-from .signer import tg_signer
+from .signer import from_folder_option, run_worker, tg_signer
 
 
 def get_automation(
@@ -56,12 +56,13 @@ def list_(obj):
     default=20,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要触发的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def run(obj, task_name, num_of_dialogs):
+def run(obj, task_name, num_of_dialogs, folder):
     automation = get_automation(task_name, obj)
-    automation.app_run(automation.run(num_of_dialogs))
+    run_worker(automation, automation.run(num_of_dialogs, folder=folder))
 
 
 @tg_automation.command(help="初始化或重置配置")

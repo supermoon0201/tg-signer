@@ -169,9 +169,13 @@ class UserAutomation(BaseUserWorker[AutomationConfig]):
             ]
         )
 
-    async def run(self, num_of_dialogs: int = 20):
+    async def run(
+        self,
+        num_of_dialogs: int = 20,
+        folder: Optional[str] = None,
+    ):
         if self.user is None:
-            await self.login(num_of_dialogs, print_chat=True)
+            await self.login(num_of_dialogs, print_chat=True, folder=folder)
 
         cfg = self.load_config(self.cfg_cls)
         if cfg.requires_ai:

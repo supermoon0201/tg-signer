@@ -39,6 +39,15 @@ tg-signer automation validate my_auto
 tg-signer automation run my_auto
 ```
 
+如果需要从 Telegram 普通 Folder 发现对话，请先将目标对话手动加入该 Folder，然后运行：
+
+```sh
+tg-signer list-folders
+tg-signer automation run --from-folder Sign my_auto
+```
+
+Folder 可以使用名称或 ID。`--from-folder` 表示从该 Folder 发现对话，指定后不会使用 `--num-of-dialogs`；不支持联系人、机器人、群组或频道等动态规则 Folder。
+
 ## 3. 先理解配置结构（心智模型）
 一个规则长这样：
 

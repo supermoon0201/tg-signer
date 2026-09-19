@@ -11,6 +11,7 @@ import httpx
 import pytest
 from pyrogram.raw.types.messages.bot_callback_answer import BotCallbackAnswer
 from pyrogram.types import (
+    Folder,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -68,6 +69,7 @@ def patch_client_methods(
     stop=None,
     get_me=None,
     get_dialogs=None,
+    get_folders=None,
     save_session_string=None,
 ):
     async def fake_start(self):
@@ -85,6 +87,9 @@ def patch_client_methods(
         for _ in ():
             yield
 
+    async def fake_get_folders(self):
+        return []
+
     async def fake_save_session_string(self):
         await asyncio.sleep(0)
 
@@ -92,6 +97,7 @@ def patch_client_methods(
     monkeypatch.setattr(core.Client, "stop", stop or fake_stop)
     monkeypatch.setattr(core.Client, "get_me", get_me or fake_get_me)
     monkeypatch.setattr(core.Client, "get_dialogs", get_dialogs or fake_get_dialogs)
+    monkeypatch.setattr(core.Client, "get_folders", get_folders or fake_get_folders)
     monkeypatch.setattr(
         core.Client,
         "save_session_string",
@@ -375,6 +381,110 @@ async def test_login_bootstrap_is_shared_between_concurrent_workers(
     assert signer1.user.id == signer2.user.id == 123456
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder_selector", ["Sign", "7"])
+async def test_login_loads_explicit_folder_chats(
+    monkeypatch, signer_factory, folder_selector
+):
+    import tg_signer.core as core
+
+    chat_a = SimpleNamespace(
+        id=1001,
+        title="A",
+        type="private",
+        username="chat_a",
+        first_name="A",
+        last_name=None,
+    )
+    chat_b = SimpleNamespace(
+        id=1002,
+        title="B",
+        type="private",
+        username="chat_b",
+        first_name="B",
+        last_name=None,
+    )
+    folder = Folder(
+        id=7,
+        name="Sign",
+        pinned_chats=[chat_a, None],
+        included_chats=[None, chat_a, chat_b],
+        exclude_archived=True,
+    )
+    calls = {"get_dialogs": 0, "get_folders": 0}
+
+    async def fake_get_dialogs(self, limit):
+        del self, limit
+        calls["get_dialogs"] += 1
+        for _ in ():
+            yield
+
+    async def fake_get_folders(self):
+        del self
+        calls["get_folders"] += 1
+        return [folder]
+
+    patch_client_methods(
+        monkeypatch,
+        core,
+        get_dialogs=fake_get_dialogs,
+        get_folders=fake_get_folders,
+    )
+    outputs = collect_outputs(monkeypatch, core)
+    signer = signer_factory()
+
+    await signer.login(folder=folder_selector, print_chat=True)
+
+    latest_chats_file = signer.get_user_dir(signer.user) / "latest_chats.json"
+    latest_chats = json.loads(latest_chats_file.read_text(encoding="utf-8"))
+    assert calls == {"get_dialogs": 0, "get_folders": 1}
+    assert [chat["id"] for chat in latest_chats] == [1001, 1002]
+    assert any("Folder: id: 7, name: Sign" in str(message) for message in outputs)
+
+
+@pytest.mark.asyncio
+async def test_login_rejects_folder_with_dynamic_rules(monkeypatch, signer_factory):
+    import tg_signer.core as core
+
+    folder = Folder(
+        id=7,
+        name="Personal",
+        pinned_chats=[],
+        included_chats=[],
+        excluded_chats=[],
+        include_contacts=True,
+    )
+
+    async def fake_get_folders(self):
+        del self
+        return [folder]
+
+    patch_client_methods(monkeypatch, core, get_folders=fake_get_folders)
+    signer = signer_factory()
+
+    with pytest.raises(core.ChatFolderError, match="仅支持手动添加对话"):
+        await signer.login(folder="Personal")
+
+
+@pytest.mark.asyncio
+async def test_login_reports_available_folders_when_selection_is_missing(
+    monkeypatch, signer_factory
+):
+    import tg_signer.core as core
+
+    folder = Folder(id=7, name="Sign")
+
+    async def fake_get_folders(self):
+        del self
+        return [folder]
+
+    patch_client_methods(monkeypatch, core, get_folders=fake_get_folders)
+    signer = signer_factory()
+
+    with pytest.raises(core.ChatFolderError, match="7:Sign"):
+        await signer.login(folder="Missing")
+
+
 def test_user_signer_load_sign_record_migrates_legacy_json(signer_factory):
     signer = signer_factory(task_name="linuxdo")
     signer.user = SimpleNamespace(id=123456)
@@ -575,8 +685,13 @@ async def test_login_loads_forum_topics_after_dialog_fetch(monkeypatch, signer_f
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "async_topic_parser",
+    [False, True],
+    ids=["sync-topic-parser", "async-topic-parser"],
+)
 async def test_client_get_forum_topics_handles_missing_top_message(
-    monkeypatch, signer_factory
+    monkeypatch, signer_factory, async_topic_parser
 ):
     import tg_signer._kurigram.methods as kurigram_methods
     import tg_signer.core as core
@@ -605,7 +720,7 @@ async def test_client_get_forum_topics_handles_missing_top_message(
             date=datetime(2026, 3, 8, tzinfo=timezone.utc),
         )
 
-    def fake_parse_topic(_client, topic, messages, _users, _chats):
+    def parse_topic(_client, topic, messages, _users, _chats):
         if topic == "topic-1":
             return SimpleNamespace(id=1, title="A", top_message=messages[10])
         if topic == "topic-1-duplicate":
@@ -613,6 +728,14 @@ async def test_client_get_forum_topics_handles_missing_top_message(
         if topic == "topic-2":
             return SimpleNamespace(id=2, title="B", top_message=None)
         return None
+
+    if async_topic_parser:
+
+        async def fake_parse_topic(*args):
+            return parse_topic(*args)
+
+    else:
+        fake_parse_topic = parse_topic
 
     monkeypatch.setattr(signer, "_call_telegram_api", direct_call)
     monkeypatch.setattr(signer.app, "resolve_peer", fake_resolve_peer)
@@ -2571,9 +2694,7 @@ async def test_webapp_api_checkin_via_playwright_active_auth_fallback(
     monkeypatch.setitem(
         sys.modules,
         "playwright.async_api",
-        SimpleNamespace(
-            async_playwright=lambda: _FakePlaywrightContext(fake_browser)
-        ),
+        SimpleNamespace(async_playwright=lambda: _FakePlaywrightContext(fake_browser)),
     )
 
     async def fake_wait_for(awaitable, timeout):
@@ -2971,3 +3092,83 @@ async def test_session_panel_checkin_passes_short_name_to_init_data_loader(
 
     assert ok is True
     signer._get_webapp_init_data.assert_awaited_once_with("zzmeb_bot", "miniapp")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_skips_consumed_message_placeholders(signer_factory):
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(
+        chat_id=123,
+        actions=[ClickKeyboardByTextAction(text="签到")],
+    )
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(
+        id=100,
+        text="签到",
+        photo=None,
+        reply_markup=None,
+    )
+    signer.context.chat_messages[route_key][99] = None
+    signer.context.chat_messages[route_key][100] = message
+    signer._click_keyboard_by_text = AsyncMock(return_value=True)
+
+    await signer.wait_for(chat, chat.actions[0], timeout=0.5)
+
+    signer._click_keyboard_by_text.assert_awaited_once_with(chat.actions[0], message)
+    assert signer.context.chat_messages[route_key][99] is None
+    assert signer.context.chat_messages[route_key][100] is None
+
+
+@pytest.mark.asyncio
+async def test_choose_option_by_image_uses_previous_photo_for_split_keyboard(
+    signer_factory,
+):
+    signer = signer_factory()
+    ai_tools = SimpleNamespace(choose_option_by_image=AsyncMock(return_value=1))
+    signer.get_ai_tools = lambda: ai_tools
+    signer.app.download_media = AsyncMock(return_value=BytesIO(b"image-bytes"))
+    signer.request_callback_answer = AsyncMock(return_value=None)
+    photo_message = SimpleNamespace(
+        id=98,
+        text=None,
+        caption=None,
+        chat=SimpleNamespace(id=123),
+        photo=SimpleNamespace(file_id="photo-id"),
+        reply_markup=None,
+    )
+    button_message = SimpleNamespace(
+        id=99,
+        text="请选择图中的物品",
+        caption=None,
+        chat=SimpleNamespace(id=123),
+        photo=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("手机", callback_data="answer:phone"),
+                    InlineKeyboardButton("电视盒子", callback_data="answer:tv"),
+                ]
+            ]
+        ),
+    )
+
+    ok = await signer._choose_option_by_image(
+        ChooseOptionByImageAction(),
+        button_message,
+        [photo_message, button_message],
+    )
+
+    assert ok is True
+    signer.app.download_media.assert_awaited_once_with("photo-id", in_memory=True)
+    ai_tools.choose_option_by_image.assert_awaited_once_with(
+        b"image-bytes",
+        "请选择图中的物品",
+        [(0, "手机"), (1, "电视盒子")],
+    )
+    signer.request_callback_answer.assert_awaited_once_with(
+        signer.app,
+        123,
+        99,
+        "answer:tv",
+    )

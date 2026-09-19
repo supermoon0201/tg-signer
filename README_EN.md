@@ -92,6 +92,7 @@ Commands:
   list                    List existing configurations
   list-members            List chat members (groups or channels; channels require
                           admin permissions)
+  list-folders            List regular Telegram chat folders
   list-sign-records       List the latest N check-in records
   list-topics             List group topic IDs (`message_thread_id`)
   list-schedule-messages  Show configured scheduled messages
@@ -122,6 +123,9 @@ Examples:
 tg-signer run
 tg-signer run my_sign  # Run the 'my_sign' task directly, without prompting
 tg-signer run-once my_sign  # Run the 'my_sign' task once directly
+tg-signer list-folders  # List regular Telegram folders and their explicit chat counts
+tg-signer login --from-folder Sign  # Log in and discover chats from the Sign folder
+tg-signer run --from-folder Sign my_sign  # Discover chats from Sign before running the task
 tg-signer list-sign-records linuxdo -n 5  # View the latest 5 check-in records for task linuxdo
 tg-signer migrate-sign-records  # Migrate check-in records under .signer/signs to SQLite
 tg-signer send-text 8671234001 /test  # Send '/test' to chat_id '8671234001'
@@ -164,6 +168,23 @@ Signer `chat_id` also supports integer IDs and `@`-prefixed usernames such as
 
 For forum-style groups, the login output also prints each topic's
 `message_thread_id`, which can be used directly with `--message-thread-id`.
+
+If a target chat is not in the recent list, create a regular Telegram folder and
+manually add the target chats. You can then load it by name or ID:
+
+```sh
+tg-signer list-folders
+tg-signer login --from-folder Sign
+# Use the ID when multiple folders have the same name
+tg-signer login --from-folder 2
+```
+
+`--from-folder` discovers chats from the folder and is also available on `run`,
+`run-once`, `multi-run`, `automation run`, and `monitor run`. When specified,
+all manually included or pinned chats in the folder are loaded and
+`--num-of-dialogs` is ignored. Folders whose membership is generated from
+dynamic rules such as contacts, bots, groups, or channels are not supported;
+use a regular folder containing only manually added chats.
 
 ### Time Zone
 
@@ -625,99 +646,7 @@ Continue configuring? (y/N): n
 
 ### Changelog
 
-#### 0.9.0b1
-- Add `send_text_template` support for monitor configs, allowing regex captures or message text to be rendered into automatic replies
-- Fix calculation questions in image messages not being detected from `caption`
-- When `ReplyByCalculationProblemAction` sees InlineKeyboard options, pass those options to the LLM and click the matching button
-- Pass message text or `caption` as the image-recognition question for `ChooseOptionByImageAction`, and validate the returned option index
-
-#### 0.8.6
-- Support Telegram forum group topics via `message_thread_id`
-- Discover group topics during login, and add `list-topics` for querying topic IDs
-- `send-text`, `send-dice`, `schedule-messages`, check-in configuration, and WebUI now support sending to a specific topic
-- Migrate check-in records to SQLite, and add `list-sign-records` plus `migrate-sign-records`
-- Keep compatibility for reading the old `sign_record.json`, and auto-import legacy records when running tasks
-- Publish official GHCR images: `ghcr.io/amchii/tg-signer:<tag>` and `ghcr.io/amchii/tg-signer:<tag>-webui`
-- Improve compatibility for topic discovery and message delivery in forum groups, channel DMs, and similar scenarios
-
-#### 0.8.5
-- `kurigram>=2.2.19,<2.3.0`
-- Add concurrent request throttling when multiple tasks run under a single account
-
-#### 0.8.4
-- Add WebGUI
-- Add the `--log-dir` option, change the default log directory to `logs`, and split warning and error logs into separate files
-
-#### 0.8.2
-- Support persistent OpenAI API and model configuration
-- Minimum supported Python version is now 3.10
-- Support handling edited messages (for example, updated keyboards)
-
-#### 0.8.0
-- Support running multiple tasks in the same process for a single account
-
-#### 0.7.6
-- Fix: when monitoring multiple chats, forwarded messages are delivered to each target chat correctly (#55)
-
-#### 0.7.5
-- Capture and log all RPC errors during task execution
-- Bump kurigram to version 2.2.7
-
-#### 0.7.4
-- Support fixed intervals when executing multiple actions
-- Remove the once-per-day limitation when scheduling with `crontab`
-
-#### 0.7.2
-- Support forwarding messages to external endpoints through:
-  - UDP
-  - HTTP
-- Replace kurirogram with kurigram
-
-#### 0.7.0
-- Support executing multiple actions sequentially for each chat session. Supported action types:
-  - Send text
-  - Send dice
-  - Click a keyboard button by text
-  - Select an option by image
-  - Reply to a math question
-  - Select an option by message text
-
-#### 0.6.6
-- Add support for sending DICE messages
-
-#### 0.6.5
-- Fix shared check-in records when multiple accounts run with the same configuration
-
-#### 0.6.4
-- Add support for simple math questions
-- Improve check-in configuration and message handling
-
-#### 0.6.3
-- Compatible with the breaking change introduced in kurigram 2.1.38
-> Remove coroutine param from run method [a7afa32](https://github.com/KurimuzonAkuma/pyrogram/commit/a7afa32df208333eecdf298b2696a2da507bde95)
-
-#### 0.6.2
-- Ignore chats where sending a check-in message fails
-
-#### 0.6.1
-- Support continuing with image recognition after clicking a button by text
-
-#### 0.6.0
-- Add crontab scheduling to Signer
-- Add the `all` rule to Monitor for matching all messages
-- Add ServerChan push support for Monitor
-- Add `multi-run` so multiple accounts can run with one shared configuration
-
-#### 0.5.2
-- Monitor supports AI-based replies
-- Add batch configuration for Telegram's built-in scheduled messages
-
-#### 0.5.1
-- Add `import` and `export` commands for configuration import/export
-
-#### 0.5.0
-- Click keyboard buttons based on configured text
-- Use AI to recognize images and click keyboard buttons
+The changelog has moved to [CHANGELOG.md](CHANGELOG.md#changelog).
 
 ### Configuration and Data Storage
 

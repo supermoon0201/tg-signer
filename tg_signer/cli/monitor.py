@@ -7,7 +7,7 @@ from click import Group
 
 from tg_signer.core import UserMonitor
 
-from .signer import tg_signer
+from .signer import from_folder_option, run_worker, tg_signer
 
 
 def get_monitor(
@@ -58,12 +58,13 @@ def list_(obj):
     default=20,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要监控的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def run(obj, task_name, num_of_dialogs):
+def run(obj, task_name, num_of_dialogs, folder):
     monitor = get_monitor(task_name, obj)
-    monitor.app_run(monitor.run(num_of_dialogs))
+    run_worker(monitor, monitor.run(num_of_dialogs, folder=folder))
 
 
 @tg_monitor.command(help="重新配置")

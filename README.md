@@ -89,6 +89,7 @@ Commands:
   import                  导入配置，默认为从终端读取。
   list                    列出已有配置
   list-members            查询聊天（群或频道）的成员, 频道需要管理员权限
+  list-folders            列出 Telegram 普通对话 Folder
   list-sign-records       列出最近N条签到记录
   list-topics             列出群组话题ID（message_thread_id）
   list-schedule-messages  显示已配置的定时消息
@@ -116,6 +117,9 @@ Commands:
 tg-signer run
 tg-signer run my_sign  # 不询问，直接运行'my_sign'任务
 tg-signer run-once my_sign  # 直接运行一次'my_sign'任务
+tg-signer list-folders  # 列出 Telegram 普通 Folder 的 ID、名称和显式对话数量
+tg-signer login --from-folder Sign  # 登录账号并从 Sign Folder 发现对话
+tg-signer run --from-folder Sign my_sign  # 从 Sign Folder 发现对话后运行任务
 tg-signer list-sign-records linuxdo -n 5  # 查看任务 linuxdo 最近 5 条签到记录
 tg-signer migrate-sign-records  # 将.signer/signs 下的签到记录迁移到 SQLite
 tg-signer send-text 8671234001 /test  # 向chat_id为'8671234001'的聊天发送'/test'文本
@@ -165,6 +169,17 @@ tg-signer login
 根据提示输入手机号码和验证码进行登录并获取最近的聊天列表，确保你想要签到的聊天在列表内。
 签到任务里的`chat_id`同时支持整数ID和以`@`开头的username，例如`@neo`。
 对于论坛群组，登录输出中会额外打印每个话题的 `message_thread_id`，可直接用于 `--message-thread-id`。
+
+如果目标对话不在最近列表中，可以在 Telegram 新建一个普通 Folder，手动把目标对话加入其中，然后按名称或 ID 加载：
+
+```sh
+tg-signer list-folders
+tg-signer login --from-folder Sign
+# 名称重复时使用 ID
+tg-signer login --from-folder 2
+```
+
+`--from-folder` 表示“从 Folder 发现对话”，也适用于 `run`、`run-once`、`multi-run`、`automation run` 和 `monitor run`。指定后会加载 Folder 中所有手动加入或置顶的对话，`--num-of-dialogs` 不再生效。当前不支持按联系人、非联系人、机器人、群组或频道等动态规则生成成员的 Folder；请使用只包含手动添加对话的普通 Folder。
 
 ### 时区
 
@@ -621,101 +636,7 @@ tg-signer monitor run my_monitor
 
 ### 版本变动日志
 
-#### 0.9.0b1
-- 监控配置支持 `send_text_template`，可将正则捕获结果或消息文本渲染到自动回复内容中
-- 修复图片消息中的计算题无法识别 `caption` 的问题
-- `回复计算题` 动作在存在 InlineKeyboard 选项时，会将按钮选项传给大模型并点击匹配按钮
-- `根据图片选择选项` 动作会将消息文本或 `caption` 作为图片识别问题，并校验大模型返回的选项序号
-
-#### 0.8.6
-- 支持 Telegram 论坛群组话题 `message_thread_id`
-- 登录时可发现群组话题，新增 `list-topics` 用于查询话题 ID
-- `send-text`、`send-dice`、`schedule-messages`、签到配置与 WebUI 支持发送到指定话题
-- 签到记录迁移到 SQLite，新增 `list-sign-records` 与 `migrate-sign-records`
-- 兼容读取旧版 `sign_record.json`，运行任务时可自动导入历史记录
-- 发布官方 GHCR 镜像：`ghcr.io/amchii/tg-signer:<tag>` 与 `ghcr.io/amchii/tg-signer:<tag>-webui`
-- 改进论坛群组、频道私信等场景下的话题发现与消息发送兼容性
-
-#### 0.8.5
-- "kurigram>=2.2.19,<2.3.0"
-- 单账户多任务时进行并发请求限流
-
-#### 0.8.4
-- 新增 WebGUI
-- 新增`--log-dir`选项，更改日志默认目录为`logs`，warning和error分为单独文件
-
-#### 0.8.2
-- 支持持久化OpenAI API和模型配置
-- Python最小版本要求：3.10
-- 支持处理编辑后的消息（如键盘）
-
-#### 0.8.0
-- 支持单个账号同一进程内同时运行多个任务
-
-#### 0.7.6
-- fix: 监控多个聊天时消息转发至每个聊天 (#55)
-
-#### 0.7.5
-- 捕获并记录执行任务期间的所有RPC错误
-- bump kurigram version to 2.2.7
-
-#### 0.7.4
-- 执行多个action时，支持固定时间间隔
-- 通过`crontab`配置定时执行时不再限制每日执行一次
-
-#### 0.7.2
-- 支持将消息转发至外部端点，通过：
-  - UDP
-  - HTTP
-- 将kurirogram替换为kurigram
-
-#### 0.7.0
-- 支持每个聊天会话按序执行多个动作，动作类型：
-  - 发送文本
-  - 发送骰子
-  - 按文本点击键盘
-  - 通过图片选择选项
-  - 通过计算题回复
-
-#### 0.6.6
-- 增加对发送DICE消息的支持
-
-#### 0.6.5
-- 修复使用同一套配置运行多个账号时签到记录共用的问题
-
-#### 0.6.4
-- 增加对简单计算题的支持
-- 改进签到配置和消息处理
-
-#### 0.6.3
-- 兼容kurigram 2.1.38版本的破坏性变更
-> Remove coroutine param from run method [a7afa32](https://github.com/KurimuzonAkuma/pyrogram/commit/a7afa32df208333eecdf298b2696a2da507bde95)
-
-
-#### 0.6.2
-- 忽略签到时发送消息失败的聊天
-
-#### 0.6.1
-- 支持点击按钮文本后继续进行图片识别
-
-#### 0.6.0
-- Signer支持通过crontab定时
-- Monitor匹配规则添加`all`支持所有消息
-- Monitor支持匹配到消息后通过server酱推送
-- Signer新增`multi-run`用于使用一套配置同时运行多个账号
-
-#### 0.5.2
-- Monitor支持配置AI进行消息回复
-- 增加批量配置「Telegram自带的定时发送消息功能」的功能
-
-#### 0.5.1
-- 添加`import`和`export`命令用于导入导出配置
-
-#### 0.5.0
-- 根据配置的文本点击键盘
-- 调用AI识别图片点击键盘
-
-
+版本变动日志已移至 [CHANGELOG.md](CHANGELOG.md#版本变动日志)。
 
 ### 配置与数据存储位置
 

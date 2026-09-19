@@ -1,3 +1,4 @@
+import inspect
 from typing import AsyncGenerator, Union
 
 import pyrogram
@@ -7,9 +8,10 @@ from pyrogram import raw, types, utils
 class SafeGetForumTopics:
     """Temporary workaround for Kurigram forum topic pagination.
 
-    Kurigram 2.2.19 may raise AttributeError when the last topic in a page has
-    no ``top_message``. Keep this patch isolated so it can be removed once the
-    upstream method is fixed.
+    Kurigram may raise AttributeError when the last topic in a page has no
+    ``top_message``. Its ``ForumTopic._parse`` method also changed from sync to
+    async in 2.2.25. Keep these compatibility patches isolated so they can be
+    removed once the supported upstream versions no longer need them.
     """
 
     async def get_forum_topics(
@@ -53,6 +55,8 @@ class SafeGetForumTopics:
                 parsed_topic = types.ForumTopic._parse(
                     self, topic, messages, users, chats
                 )
+                if inspect.isawaitable(parsed_topic):
+                    parsed_topic = await parsed_topic
                 if parsed_topic is None or parsed_topic.id in seen_topic_ids:
                     continue
                 seen_topic_ids.add(parsed_topic.id)

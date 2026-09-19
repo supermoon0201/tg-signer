@@ -72,7 +72,7 @@ COPY assets ./assets
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     python -m pip install \
     --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple \
-    .
+    ".[speedup]"
 
 # Data directory for runtime
 WORKDIR /app

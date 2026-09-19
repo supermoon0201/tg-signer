@@ -80,11 +80,12 @@ class DummySigner:
             }
         )
 
-    async def run_once(self, num_of_dialogs):
+    async def run_once(self, num_of_dialogs, folder=None):
         self.calls.append(
             {
                 "method": "run_once",
                 "num_of_dialogs": num_of_dialogs,
+                "folder": folder,
             }
         )
 

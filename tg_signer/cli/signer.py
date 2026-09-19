@@ -7,7 +7,7 @@ import click
 from click import Context, HelpFormatter
 
 from tg_signer.config import parse_chat_id_or_username
-from tg_signer.core import UserSigner, get_proxy
+from tg_signer.core import ChatFolderError, UserSigner, get_proxy
 from tg_signer.sign_record_store import SignRecordStore
 
 
@@ -57,6 +57,29 @@ def get_signer(
         loop=loop,
     )
     return signer
+
+
+def from_folder_option(command):
+    return click.option(
+        "--from-folder",
+        "folder",
+        default=None,
+        help="从指定普通 Folder 加载手动添加的对话，可使用名称或 ID",
+    )(command)
+
+
+def run_worker(worker, coroutine):
+    try:
+        worker.app_run(coroutine)
+    except ChatFolderError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def run_coroutines(loop, coroutines):
+    try:
+        loop.run_until_complete(asyncio.gather(*coroutines))
+    except ChatFolderError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.group(name="tg-signer", help="使用<子命令> --help查看使用说明", cls=AliasedGroup)
@@ -158,6 +181,7 @@ def tg_signer(
     proxy = get_proxy(proxy)
     if ctx.invoked_subcommand in [
         "login",
+        "list-folders",
         "run",
         "run-once",
         "send-text",
@@ -189,6 +213,13 @@ def version():
 @click.pass_obj
 def list_(obj):
     return UserSigner(workdir=obj["workdir"]).list_()
+
+
+@tg_signer.command(name="list-folders", help="列出 Telegram 普通对话 Folder")
+@click.pass_obj
+def list_folders(obj):
+    signer = get_signer(None, obj)
+    run_worker(signer, signer.list_folders())
 
 
 @tg_signer.command(name="list-sign-records", help="列出最近N条签到记录")
@@ -231,12 +262,13 @@ def list_sign_records(obj, task_name: str | None, limit: int, user_id: str | Non
     default=50,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要签到的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def login(obj, num_of_dialogs):
+def login(obj, num_of_dialogs, folder):
     signer = get_signer(None, obj)
-    signer.app_run(signer.login(num_of_dialogs))
+    run_worker(signer, signer.login(num_of_dialogs, folder=folder))
 
 
 @tg_signer.command(help="登出账号并删除session文件")
@@ -254,10 +286,11 @@ def logout(obj):
     default=50,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要签到的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def run(obj, task_names, num_of_dialogs):
+def run(obj, task_names, num_of_dialogs, folder):
     if len(task_names) < 1:
         raise click.UsageError("At least one task name is required")
     loop = asyncio.new_event_loop()
@@ -265,8 +298,8 @@ def run(obj, task_names, num_of_dialogs):
     coros = []
     for task_name in task_names:
         signer = get_signer(task_name, obj, loop=loop)
-        coros.append(signer.run(num_of_dialogs))
-    loop.run_until_complete(asyncio.gather(*coros))
+        coros.append(signer.run(num_of_dialogs, folder=folder))
+    run_coroutines(loop, coros)
 
 
 @tg_signer.command(help="运行一次签到任务，即使该签到任务今日已执行过")
@@ -278,12 +311,13 @@ def run(obj, task_names, num_of_dialogs):
     default=50,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要签到的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def run_once(obj, task_name, num_of_dialogs):
+def run_once(obj, task_name, num_of_dialogs, folder):
     signer = get_signer(task_name, obj)
-    signer.app_run(signer.run_once(num_of_dialogs))
+    run_worker(signer, signer.run_once(num_of_dialogs, folder=folder))
 
 
 @tg_signer.command(help='发送一次文本消息, 请确保当前会话已经"见过"该`chat_id`')
@@ -544,10 +578,11 @@ def list_schedule_messages(obj, chat_id):
     default=50,
     show_default=True,
     type=int,
-    help="获取最近N个对话, 请确保想要签到的对话在最近N个对话内",
+    help="未指定 --from-folder 时获取最近N个对话",
 )
+@from_folder_option
 @click.pass_obj
-def multi_run(obj, accounts, task_name, num_of_dialogs):
+def multi_run(obj, accounts, task_name, num_of_dialogs, folder):
     logger = logging.getLogger("tg-signer")
     logger.info(f"开始使用一套配置({task_name})同时运行多个账号..")
     loop = asyncio.new_event_loop()
@@ -556,8 +591,8 @@ def multi_run(obj, accounts, task_name, num_of_dialogs):
     for account in accounts:
         obj["account"] = account
         signer = get_signer(task_name, obj, loop=loop)
-        coros.append(signer.run(num_of_dialogs))
-    loop.run_until_complete(asyncio.gather(*coros))
+        coros.append(signer.run(num_of_dialogs, folder=folder))
+    run_coroutines(loop, coros)
 
 
 @tg_signer.command(name="llm-config", help="配置大模型API")
