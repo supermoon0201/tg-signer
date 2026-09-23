@@ -310,9 +310,7 @@ class InteractiveSignerConfig:
                             elif isinstance(action, ClickKeyboardByTextAction):
                                 detail = action.text
                             elif isinstance(action, OpenWebAppByTextAction):
-                                detail = (
-                                    f"{action.text} -> {action.page_button_text}"
-                                )
+                                detail = f"{action.text} -> {action.page_button_text or '自动回传'}"
 
                             ui.label(f"{desc} {detail}").classes("text-sm")
                             ui.button(
@@ -377,11 +375,11 @@ class InteractiveSignerConfig:
                                     "已签到提示文本（可选）"
                                 ).classes("w-full")
                             elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
-                                inputs["text"] = ui.input(
-                                    "Telegram按钮文本"
-                                ).classes("w-full")
+                                inputs["text"] = ui.input("Telegram按钮文本").classes(
+                                    "w-full"
+                                )
                                 inputs["page_button_text"] = ui.input(
-                                    "页面按钮文本"
+                                    "页面按钮文本（可选；留空等待 WebApp 自动回传）"
                                 ).classes("w-full")
                                 inputs["ready_text"] = ui.input(
                                     "点击前等待文本（可选）"
@@ -461,11 +459,11 @@ class InteractiveSignerConfig:
                                 )
                             elif t == SupportAction.OPEN_WEBAPP_BY_TEXT:
                                 txt = inputs["text"].value
-                                page_button_text = inputs["page_button_text"].value
+                                page_button_text = (
+                                    inputs["page_button_text"].value or None
+                                )
                                 if not txt:
                                     raise ValueError("请输入Telegram按钮文本")
-                                if not page_button_text:
-                                    raise ValueError("请输入页面按钮文本")
                                 ready_text = inputs["ready_text"].value or None
                                 response_url_contains = (
                                     inputs["response_url_contains"].value or None
@@ -495,8 +493,13 @@ class InteractiveSignerConfig:
                                 two_captcha_api_key = (
                                     inputs["two_captcha_api_key"].value or None
                                 )
-                                if captcha_image_selector and not captcha_input_selector:
-                                    raise ValueError("已填写验证码图片选择器时，必须填写输入框选择器")
+                                if (
+                                    captcha_image_selector
+                                    and not captcha_input_selector
+                                ):
+                                    raise ValueError(
+                                        "已填写验证码图片选择器时，必须填写输入框选择器"
+                                    )
                                 new_action = OpenWebAppByTextAction(
                                     text=txt,
                                     page_button_text=page_button_text,

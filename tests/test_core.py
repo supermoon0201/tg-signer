@@ -957,6 +957,81 @@ async def test_click_keyboard_by_text_ignores_webapp_button(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_click_keyboard_by_text_sends_reply_keyboard_button(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    sent = []
+
+    async def fake_send_message(
+        chat_id, text, delete_after=None, message_thread_id=None
+    ):
+        sent.append((chat_id, text, delete_after, message_thread_id))
+
+    signer.send_message = fake_send_message
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("🛡️ 开始验证")]],
+            resize_keyboard=True,
+        ),
+    )
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="开始验证"),
+        message,
+    )
+
+    assert ok is True
+    assert sent == [(123, "🛡️ 开始验证", None, None)]
+
+
+@pytest.mark.asyncio
+async def test_click_keyboard_by_text_does_not_send_webapp_button(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    sent = []
+
+    async def fake_send_message(*args, **kwargs):
+        sent.append((args, kwargs))
+
+    signer.send_message = fake_send_message
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        message_thread_id=None,
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [
+                    KeyboardButton(
+                        "🛡️ 开始验证",
+                        web_app=WebAppInfo(url="https://verify.example"),
+                    )
+                ]
+            ],
+            resize_keyboard=True,
+        ),
+    )
+
+    ok = await signer._click_keyboard_by_text(
+        ClickKeyboardByTextAction(text="开始验证"),
+        message,
+    )
+
+    assert ok is False
+    assert sent == []
+
+
+@pytest.mark.asyncio
 async def test_click_keyboard_by_text_repeats_until_button_disappears(
     monkeypatch, tmp_path
 ):
@@ -1328,6 +1403,22 @@ async def test_choose_option_by_text_clicks_emoji_target_sequence(
     ]
 
 
+def test_extract_ordered_button_sequence_reverses_right_to_left(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    sequence = signer._extract_ordered_button_sequence(
+        "请按照下面目标序列从 右往左 依次点击：\n\n🚗 🍹 🗺️ 🍍 🤫",
+        ["🍍", "7", "🗺️", "Y", "🍹", "B", "🚗", "🤫", "🪜"],
+    )
+
+    assert sequence == ["🤫", "🍍", "🗺️", "🍹", "🚗"]
+
+
 @pytest.mark.asyncio
 async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp_path):
     signer = UserSigner(
@@ -1693,7 +1784,8 @@ async def test_open_webapp_by_text_uses_button_and_runs_page_action(
         seen["button"] = button
         return "https://example.com/auth"
 
-    async def fake_run_webapp(action, webview_url, route_key=None):
+    async def fake_run_webapp(action, webview_url, route_key=None, **kwargs):
+        del kwargs
         seen["action"] = action
         seen["webview_url"] = webview_url
         seen["route_key"] = route_key
@@ -1773,6 +1865,62 @@ async def test_open_webapp_by_text_clicks_callback_button(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_open_webapp_by_text_uses_reply_webapp_button(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    seen = {}
+
+    async def fake_get_webview_url(message, button):
+        seen["message"] = message
+        seen["button"] = button
+        return "https://verify.example/auth"
+
+    async def fake_run_webapp(action, webview_url, route_key=None, **kwargs):
+        del kwargs
+        seen["action"] = action
+        seen["webview_url"] = webview_url
+        seen["route_key"] = route_key
+        return True
+
+    monkeypatch.setattr(signer, "_get_webview_url_from_button", fake_get_webview_url)
+    monkeypatch.setattr(signer, "_run_webapp_page_action", fake_run_webapp)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=123),
+        id=456,
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [
+                    KeyboardButton(
+                        "🛡️ 开始验证",
+                        web_app=WebAppInfo(url="https://verify.example"),
+                    )
+                ]
+            ],
+            resize_keyboard=True,
+        ),
+    )
+    action = OpenWebAppByTextAction(
+        text="开始验证",
+        telegram_success_text="签到成功",
+    )
+
+    ok = await signer._open_webapp_by_text(action, message)
+
+    assert ok is True
+    assert seen["message"] is message
+    assert seen["button"].text == "🛡️ 开始验证"
+    assert seen["action"] is action
+    assert seen["webview_url"] == "https://verify.example/auth"
+    assert seen["route_key"] == signer.get_route_key(123, None)
+
+
+@pytest.mark.asyncio
 async def test_wait_for_webapp_telegram_success_matches_chat_message(tmp_path):
     signer = UserSigner(
         task_name="task",
@@ -1847,6 +1995,9 @@ async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tm
         def on(self, *args, **kwargs):
             return None
 
+        async def add_init_script(self, *args, **kwargs):
+            return None
+
         async def goto(self, *args, **kwargs):
             return None
 
@@ -1899,6 +2050,126 @@ async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tm
     )
 
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_run_webapp_page_action_waits_without_page_button(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    signer.context = signer.ensure_ctx()
+    route_key = signer.get_route_key(123, None)
+    signer.context.chat_messages[route_key][1] = SimpleNamespace(
+        text="🎉 签到成功",
+        caption=None,
+        reply_markup=None,
+    )
+
+    action = OpenWebAppByTextAction(
+        text="开始验证",
+        telegram_success_text="签到成功",
+        telegram_success_timeout=1,
+        turnstile_enabled=True,
+        page_button_text=None,
+    )
+
+    class FakePage:
+        def on(self, *args, **kwargs):
+            return None
+
+        async def add_init_script(self, *args, **kwargs):
+            return None
+
+        async def goto(self, *args, **kwargs):
+            return None
+
+    class FakeBrowser:
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            return None
+
+    class FakeChromium:
+        async def launch(self, headless=True):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    import sys
+    import types
+
+    fake_async_api = types.SimpleNamespace(
+        TimeoutError=TimeoutError,
+        async_playwright=lambda: FakePlaywright(),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_async_api)
+    monkeypatch.setattr(
+        signer, "_maybe_solve_webapp_captcha", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(signer, "_is_turnstile_visible", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        signer, "_wait_for_turnstile_passed", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        signer, "_handle_turnstile_after_button_click", AsyncMock(return_value="done")
+    )
+
+    ok = await signer._run_webapp_page_action(
+        action,
+        "https://verify.example/auth",
+        route_key=route_key,
+    )
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_forward_webapp_data_uses_send_webview_data(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+    calls = {}
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "__tgSignerWebAppData" in script
+            return '{"type":"checkin_turnstile","proof":"opaque"}'
+
+    async def fake_resolve_peer(bot_id):
+        calls["bot_id"] = bot_id
+        return "bot-peer"
+
+    async def fake_invoke(request):
+        calls["request"] = request
+
+    monkeypatch.setattr(signer.app, "resolve_peer", fake_resolve_peer)
+    monkeypatch.setattr(signer.app, "invoke", fake_invoke)
+
+    ok = await signer._forward_webapp_data(
+        FakePage(),
+        8667225225,
+        "🛡️ 开始验证",
+    )
+
+    assert ok is True
+    assert calls["bot_id"] == 8667225225
+    assert calls["request"].QUALNAME == "functions.messages.SendWebViewData"
+    assert calls["request"].button_text == "🛡️ 开始验证"
+    assert calls["request"].data == '{"type":"checkin_turnstile","proof":"opaque"}'
 
 
 def test_get_twocaptcha_api_key_prefers_action_value(monkeypatch, tmp_path):
@@ -3185,6 +3456,135 @@ async def test_wait_for_skips_consumed_message_placeholders(signer_factory):
     signer._click_keyboard_by_text.assert_awaited_once_with(chat.actions[0], message)
     assert signer.context.chat_messages[route_key][99] is None
     assert signer.context.chat_messages[route_key][100] is None
+
+
+@pytest.mark.asyncio
+async def test_wait_for_recovers_callback_button_from_history(
+    monkeypatch,
+    signer_factory,
+):
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(
+        chat_id=123,
+        actions=[ClickKeyboardByTextAction(text="签到")],
+    )
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(
+        id=101,
+        date=datetime.now(),
+        chat=SimpleNamespace(id=123),
+        message_thread_id=None,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎯 签到", callback_data="sign")]]
+        ),
+    )
+    callback_calls = []
+
+    async def fake_get_chat_history(chat_id, limit):
+        assert chat_id == 123
+        assert limit == 20
+        yield message
+
+    async def fake_call_telegram_api(_name, func):
+        return await func()
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        return BotCallbackAnswer(cache_time=0, alert=False, message=None)
+
+    monkeypatch.setattr(signer.app, "get_chat_history", fake_get_chat_history)
+    monkeypatch.setattr(signer, "_call_telegram_api", fake_call_telegram_api)
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+
+    await signer.wait_for(chat, chat.actions[0], timeout=0.5)
+
+    assert callback_calls == [(123, 101, "sign")]
+    assert signer.context.chat_messages[route_key][101] is None
+
+
+@pytest.mark.asyncio
+async def test_wait_for_recovers_pending_ordered_challenge_from_history(
+    monkeypatch,
+    signer_factory,
+):
+    signer = signer_factory()
+    signer.context = signer.ensure_ctx()
+    chat = SignChatV3(
+        chat_id=123,
+        actions=[ChooseOptionByTextAction()],
+    )
+    route_key = signer.get_route_key(123, None)
+    message = SimpleNamespace(
+        id=101,
+        chat=SimpleNamespace(id=123),
+        message_thread_id=None,
+        text=(
+            "🤖人机验证\n请在180秒内按照下面目标序列从左往右依次点击：\n\n👐 🛤️ 🤎 🖍️ 🙂"
+        ),
+        caption=None,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🖍️", callback_data="crayon"),
+                    InlineKeyboardButton("🤛", callback_data="fist"),
+                    InlineKeyboardButton("🛤️", callback_data="railway"),
+                ],
+                [
+                    InlineKeyboardButton("🍋", callback_data="lemon"),
+                    InlineKeyboardButton("🎙️", callback_data="microphone"),
+                    InlineKeyboardButton("🙂", callback_data="smile"),
+                ],
+                [
+                    InlineKeyboardButton("🤎", callback_data="heart"),
+                    InlineKeyboardButton("😜", callback_data="wink"),
+                    InlineKeyboardButton("👐", callback_data="hands"),
+                ],
+            ]
+        ),
+    )
+    callback_calls = []
+
+    async def fake_get_chat_history(chat_id, limit):
+        assert chat_id == 123
+        assert limit == 20
+        yield message
+
+    async def fake_call_telegram_api(_name, func):
+        return await func()
+
+    async def fake_request_callback_answer(app, chat_id, message_id, callback_data):
+        del app
+        callback_calls.append((chat_id, message_id, callback_data))
+        return None
+
+    async def fake_latest_message(_message):
+        return message
+
+    async def fake_sleep(_seconds):
+        return None
+
+    def fail_if_ai_is_used():
+        raise AssertionError("显式目标序列不应调用大模型")
+
+    monkeypatch.setattr(signer.app, "get_chat_history", fake_get_chat_history)
+    monkeypatch.setattr(signer, "_call_telegram_api", fake_call_telegram_api)
+    monkeypatch.setattr(signer, "request_callback_answer", fake_request_callback_answer)
+    monkeypatch.setattr(signer, "_get_latest_text_choice_message", fake_latest_message)
+    monkeypatch.setattr(signer, "get_ai_tools", fail_if_ai_is_used)
+    monkeypatch.setattr("tg_signer.core.asyncio.sleep", fake_sleep)
+
+    await signer.wait_for(chat, chat.actions[0], timeout=0.5)
+
+    assert callback_calls == [
+        (123, 101, "hands"),
+        (123, 101, "railway"),
+        (123, 101, "heart"),
+        (123, 101, "crayon"),
+        (123, 101, "smile"),
+    ]
+    assert signer.context.chat_messages[route_key][101] is None
 
 
 @pytest.mark.asyncio

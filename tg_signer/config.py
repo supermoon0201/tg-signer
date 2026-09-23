@@ -204,7 +204,7 @@ class SupportAction(int, Enum):
     REPLY_BY_CALCULATION_PROBLEM = 5  # 回复计算题
     WEBVIEW_CHECKIN = 6  # WebView面板页面签到
     CHOOSE_OPTION_BY_GIF = 7  # 根据GIF图片选择选项
-    OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并点击页面按钮
+    OPEN_WEBAPP_BY_TEXT = 8  # 根据文本打开小程序并完成页面验证/点击
     CHOOSE_OPTION_BY_TEXT = 9  # 根据文本题面选择选项
     SESSION_PANEL_CHECKIN = 10  # 基于session(cookie)的面板接口签到
     TGBOT_CHECKIN_WITH_RENEW = 11  # Bot内纯按钮签到+条件续期
@@ -220,7 +220,7 @@ class SupportAction(int, Enum):
             SupportAction.REPLY_BY_CALCULATION_PROBLEM: "回复计算题",
             SupportAction.WEBVIEW_CHECKIN: "面板页面签到",
             SupportAction.CHOOSE_OPTION_BY_GIF: "根据GIF图片选择选项",
-            SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并点击页面按钮",
+            SupportAction.OPEN_WEBAPP_BY_TEXT: "根据文本打开小程序并完成页面验证",
             SupportAction.CHOOSE_OPTION_BY_TEXT: "根据文本题面或目标序列选择选项",
             SupportAction.SESSION_PANEL_CHECKIN: "面板接口签到(session)",
             SupportAction.TGBOT_CHECKIN_WITH_RENEW: "Bot内签到+条件续期",
@@ -306,7 +306,7 @@ class OpenWebAppByTextAction(SignAction):
         SupportAction.OPEN_WEBAPP_BY_TEXT
     )
     text: str  # Telegram消息中要点击的小程序按钮文本
-    page_button_text: str  # 打开小程序后页面中要点击的按钮文本
+    page_button_text: Optional[str] = None  # 页面中要点击的按钮文本
     ready_text: Optional[str] = None  # 点击页面按钮前需要等待出现的文本
     success_text: Optional[str] = None  # 点击后期望在页面中出现的文本
     telegram_success_text: Optional[str] = None  # 点击后期望在Telegram消息中出现的文本
@@ -350,12 +350,18 @@ class TgBotCheckinWithRenewAction(SignAction):
     already_signed_text: str = "已经签到"  # 已签到提示文本（含此子串即视为已签）
     balance_regex: str = r"积分余额[：:]\s*(\d+)"  # 从消息文本提取余额的正则
     days_regex: str = r"剩余\s*(\d+)\s*天"  # 从消息文本提取剩余天数的正则
-    auto_renew_threshold_days: Optional[int] = None  # 剩余天数≤此值时尝试续期，None表示不续期
+    auto_renew_threshold_days: Optional[int] = (
+        None  # 剩余天数≤此值时尝试续期，None表示不续期
+    )
     renew_cost: int = 60  # 续期所需积分
     renew_btn_text: str = "🎟️ 续期"  # 进入续期菜单的按钮文本
-    renew_confirm_btn_text: str = "🛒 账号续期 30 天"  # 确认续期的按钮文本（含此子串即匹配）
+    renew_confirm_btn_text: str = (
+        "🛒 账号续期 30 天"  # 确认续期的按钮文本（含此子串即匹配）
+    )
     bark_enabled: bool = False  # 是否启用 Bark 通知
-    bark_notify_level: Literal["all", "renew_only"] = "all"  # all=全部事件通知；renew_only=仅续期相关（余额不足/续期成功/续期失败）
+    bark_notify_level: Literal["all", "renew_only"] = (
+        "all"  # all=全部事件通知；renew_only=仅续期相关（余额不足/续期成功/续期失败）
+    )
 
 
 class SessionPanelCheckinAction(SignAction):
@@ -397,31 +403,45 @@ class WebAppApiCheckinAction(SignAction):
     无需 Playwright。
     """
 
-    action: Literal[SupportAction.WEBAPP_API_CHECKIN] = (
-        SupportAction.WEBAPP_API_CHECKIN
-    )
+    action: Literal[SupportAction.WEBAPP_API_CHECKIN] = SupportAction.WEBAPP_API_CHECKIN
     bot_username: Optional[str] = None  # Bot 用户名，留空则直接使用 chat_id（推荐）
-    webapp_url: Optional[str] = None  # WebApp URL，留空则自动从触发命令回复的内联键盘中提取
-    webapp_trigger_command: Optional[str] = None  # webapp_url 为空时自动发此命令让 Bot 回复含 WebApp 按钮的消息
-    webapp_button_text: Optional[str] = None  # 内联键盘中 WebApp 按钮的文字，用于定位按钮（留空则取第一个 WebApp 按钮）
+    webapp_url: Optional[str] = (
+        None  # WebApp URL，留空则自动从触发命令回复的内联键盘中提取
+    )
+    webapp_trigger_command: Optional[str] = (
+        None  # webapp_url 为空时自动发此命令让 Bot 回复含 WebApp 按钮的消息
+    )
+    webapp_button_text: Optional[str] = (
+        None  # 内联键盘中 WebApp 按钮的文字，用于定位按钮（留空则取第一个 WebApp 按钮）
+    )
     api_base_url: Optional[str] = None  # API 基础URL，留空则从 webapp_url 推导
     auth_endpoint: str = "/api/telegram-miniapp/auth"  # initData 换 JWT 的接口
     auth_telegram_id_field: str = "telegramId"  # auth 请求中放 telegramId 的字段名
     auth_init_data_field: str = "initData"  # auth 请求中放 initData 的字段名
     auth_token_path: str = "token"  # auth 响应中 JWT 的点分路径
-    status_endpoint: Optional[str] = "/api/checkin/status"  # 已签状态查询接口，留空则跳过
+    status_endpoint: Optional[str] = (
+        "/api/checkin/status"  # 已签状态查询接口，留空则跳过
+    )
     status_already_checked_path: str = "hasCheckedInToday"  # 已签字段的点分路径
     checkin_endpoint: str = "/api/checkin"  # 签到接口
-    checkin_token_field: str = "verificationToken"  # 签到请求中放 Turnstile token 的字段
+    checkin_token_field: str = (
+        "verificationToken"  # 签到请求中放 Turnstile token 的字段
+    )
     success_key: str = "success"  # 签到响应中判定成功的字段
     success_value: Union[bool, int, str] = True  # 成功字段的期望值
     message_key: Optional[str] = "message"  # 日志展示用的消息字段
     amount_key: Optional[str] = "amount"  # 签到奖励金额字段
     currency_unit_key: Optional[str] = "currencyUnit"  # 签到奖励货币单位字段
     balance_key: Optional[str] = "balance"  # 签到后余额字段
-    turnstile_sitekey: Optional[str] = None  # Turnstile sitekey，留空则自动从验证配置接口获取
-    verification_config_endpoint: str = "/api/settings/verification/public"  # 获取 sitekey 的接口
-    two_captcha_api_key: Optional[str] = None  # 2captcha API Key，留空则使用环境变量 TWOCAPTCHA_API_KEY
+    turnstile_sitekey: Optional[str] = (
+        None  # Turnstile sitekey，留空则自动从验证配置接口获取
+    )
+    verification_config_endpoint: str = (
+        "/api/settings/verification/public"  # 获取 sitekey 的接口
+    )
+    two_captcha_api_key: Optional[str] = (
+        None  # 2captcha API Key，留空则使用环境变量 TWOCAPTCHA_API_KEY
+    )
     turnstile_max_attempts: int = 3  # Turnstile 最多重试次数
     turnstile_poll_interval: int = 5  # 2captcha 轮询间隔秒数
     turnstile_single_timeout: int = 90  # 单次 2captcha 任务超时秒数
@@ -520,10 +540,11 @@ class SignChatV3(BaseJSONConfig):
                 text_preview = (
                     action.text[:10] + "..." if len(action.text) > 10 else action.text
                 )
+                page_button_text = action.page_button_text or "自动回传"
                 page_text_preview = (
-                    action.page_button_text[:10] + "..."
-                    if len(action.page_button_text) > 10
-                    else action.page_button_text
+                    page_button_text[:10] + "..."
+                    if len(page_button_text) > 10
+                    else page_button_text
                 )
                 details = f"WebApp: {text_preview} -> {page_text_preview}"
             elif isinstance(action, WebViewCheckinAction):

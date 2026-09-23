@@ -39,6 +39,7 @@ from pyrogram.types import (
     Folder,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
     Object,
     ReplyKeyboardMarkup,
@@ -137,6 +138,91 @@ TURNSTILE_HOOK_SCRIPT = """
   const timer = window.setInterval(install, 50);
   window.setTimeout(() => window.clearInterval(timer), 10000);
 })();
+"""
+WEBAPP_SEND_DATA_HOOK_SCRIPT = """
+(() => {
+  if (window.__tgSignerWebAppData) {
+    return;
+  }
+  window.__tgSignerWebAppData = [];
+
+  const install = () => {
+    const app = window.Telegram && window.Telegram.WebApp;
+    if (!app || typeof app.sendData !== "function" || app.__tgSignerWrapped) {
+      return;
+    }
+    try {
+      const original = app.sendData.bind(app);
+      app.sendData = function(data) {
+        try {
+          window.__tgSignerWebAppData.push(String(data));
+        } catch (error) {
+          console.debug("tg-signer WebApp data hook failed", error);
+        }
+        return original(data);
+      };
+      app.__tgSignerWrapped = true;
+    } catch (error) {
+      console.debug("tg-signer WebApp sendData wrap failed", error);
+    }
+  };
+
+  const recordWebViewData = (args) => {
+    for (const arg of args) {
+      if (arg && typeof arg === "object" && "data" in arg) {
+        window.__tgSignerWebAppData.push(String(arg.data));
+        return;
+      }
+      if (typeof arg === "string") {
+        window.__tgSignerWebAppData.push(arg);
+        return;
+      }
+    }
+  };
+
+  const installWebViewHook = () => {
+    const webView = window.Telegram && window.Telegram.WebView;
+    if (
+      webView &&
+      typeof webView.postEvent === "function" &&
+      !webView.__tgSignerWrapped
+    ) {
+      const original = webView.postEvent;
+      webView.postEvent = function(eventName) {
+        if (eventName === "web_app_data_send") {
+          recordWebViewData(Array.prototype.slice.call(arguments, 1));
+        }
+        return original.apply(this, arguments);
+      };
+      webView.__tgSignerWrapped = true;
+    }
+
+    if (!window.__tgSignerPostMessageWrapped) {
+      const originalPostMessage = window.postMessage.bind(window);
+      window.postMessage = function(message) {
+        try {
+          const payload =
+            typeof message === "string" ? JSON.parse(message) : message;
+          if (payload && payload.eventType === "web_app_data_send") {
+            recordWebViewData([payload.eventData]);
+          }
+        } catch (error) {
+          // 不是 JSON 的普通 postMessage 不需要处理。
+        }
+        return originalPostMessage.apply(window, arguments);
+      };
+      window.__tgSignerPostMessageWrapped = true;
+    }
+  };
+
+  installWebViewHook();
+  const webViewTimer = window.setInterval(installWebViewHook, 50);
+  window.setTimeout(() => window.clearInterval(webViewTimer), 60000);
+
+  install();
+  const timer = window.setInterval(install, 50);
+  window.setTimeout(() => window.clearInterval(timer), 10000);
+})()
 """
 
 Session.START_TIMEOUT = 5  # 原始超时时间为2秒，但一些代理访问会超时，所以这里调大一点
@@ -1069,7 +1155,9 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     text_of_btn_to_click = local_input_(
                         "Telegram消息中要点击的小程序按钮文本: "
                     )
-                    page_button_text = local_input_("小程序页面中要点击的按钮文本: ")
+                    page_button_text = local_input_(
+                        "小程序页面中要点击的按钮文本（可选，留空则等待WebApp自动回传）: "
+                    )
                     ready_text = local_input_(
                         "点击前需要等待出现的文本（如 验证成功，可选，直接回车跳过）: "
                     ).strip()
@@ -1512,7 +1600,24 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ):
         found = self._find_callback_button(message, action.text)
         if not found:
-            return False
+            reply_found = self._find_reply_keyboard_button(message, action.text)
+            if not reply_found:
+                return False
+            btn = reply_found[1]
+            if btn.web_app:
+                self.log(
+                    f"回复键盘按钮「{btn.text}」是 WebApp，请使用 action=8 打开，"
+                    "不能通过发送同名文本完成验证。",
+                    level="WARNING",
+                )
+                return False
+            self.log(f"点击回复键盘按钮: {btn.text}")
+            await self.send_message(
+                message.chat.id,
+                btn.text,
+                message_thread_id=getattr(message, "message_thread_id", None),
+            )
+            return True
 
         route_key = self.get_route_key(
             message.chat.id,
@@ -1603,6 +1708,81 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         for btn in (b for row in reply_markup.inline_keyboard for b in row if b.text):
             if text in btn.text and btn.callback_data:
                 return message, btn
+        return None
+
+    def _find_reply_keyboard_button(
+        self, message: Optional[Message], text: str
+    ) -> Optional[tuple[Message, KeyboardButton]]:
+        """查找普通回复键盘按钮，并由发送同名文本模拟点击。"""
+        if not message:
+            return None
+        reply_markup = getattr(message, "reply_markup", None)
+        if not isinstance(reply_markup, ReplyKeyboardMarkup):
+            return None
+        for btn in (b for row in reply_markup.keyboard for b in row if b.text):
+            if text in btn.text:
+                return message, btn
+        return None
+
+    async def _find_recent_keyboard_message(
+        self,
+        chat: SignChatV3,
+        text: str,
+        *,
+        limit: int = 20,
+    ) -> Optional[Message]:
+        """恢复最近消息中的按钮，支持机器人要求重复点击同一菜单。"""
+        route_key = self.get_runtime_route_key(chat)
+        cached_messages = self.context.chat_messages.get(route_key, {})
+        for message in reversed(list(cached_messages.values())):
+            if message and (
+                self._find_callback_button(message, text)
+                or self._find_reply_keyboard_button(message, text)
+            ):
+                return message
+
+        async def load_history() -> list[Message]:
+            return [
+                message
+                async for message in self.app.get_chat_history(
+                    chat.chat_id,
+                    limit=limit,
+                )
+            ]
+
+        try:
+            messages = await self._call_telegram_api(
+                "messages.GetHistory",
+                load_history,
+            )
+        except Exception as exc:
+            self.log(f"读取最近按钮消息失败，继续等待新消息: {exc}", level="WARNING")
+            return None
+
+        for message in messages:
+            message_date = getattr(message, "date", None)
+            if isinstance(message_date, datetime):
+                current_time = (
+                    datetime.now(message_date.tzinfo)
+                    if message_date.tzinfo
+                    else datetime.now()
+                )
+                if (current_time - message_date).total_seconds() > 180:
+                    continue
+            if (
+                chat.message_thread_id is not None
+                and getattr(message, "message_thread_id", None)
+                != chat.message_thread_id
+            ):
+                continue
+            if not (
+                self._find_callback_button(message, text)
+                or self._find_reply_keyboard_button(message, text)
+            ):
+                continue
+            self.context.chat_messages[route_key][message.id] = message
+            self.log(f"检测到历史消息中的按钮「{text}」，继续处理")
+            return message
         return None
 
     def _find_latest_callback_button(
@@ -1721,6 +1901,18 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 continue
             result.append(option_by_token[token])
             cursor += len(token)
+        normalized_direction = self._normalize_match_text(prompt_text)
+        right_to_left_markers = (
+            "从右往左",
+            "自右向左",
+            "righttoleft",
+            "fromrighttoleft",
+        )
+        if self._normalized_text_contains_any(
+            normalized_direction,
+            right_to_left_markers,
+        ):
+            result.reverse()
         return result
 
     async def _click_ordered_button_sequence(
@@ -1805,6 +1997,77 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             return cached
         return None
 
+    def _get_ordered_text_choice_sequence(self, message: Message) -> list[str]:
+        """从消息中提取显式标注的按钮目标序列。"""
+        reply_markup = getattr(message, "reply_markup", None)
+        if not isinstance(reply_markup, InlineKeyboardMarkup):
+            return []
+        prompt_text = getattr(message, "text", None) or getattr(
+            message, "caption", None
+        )
+        if not prompt_text:
+            return []
+        options = [
+            btn.text
+            for btn in _get_inline_keyboard_buttons(message)
+            if btn.text and btn.callback_data
+        ]
+        return self._extract_ordered_button_sequence(prompt_text, options)
+
+    async def _find_recent_ordered_text_choice_message(
+        self,
+        chat: SignChatV3,
+        *,
+        limit: int = 20,
+    ) -> Optional[Message]:
+        """回看最近消息，恢复机器人未重复发送的未完成顺序验证。"""
+        route_key = self.get_runtime_route_key(chat)
+        cached_messages = self.context.chat_messages.get(route_key, {})
+        for message in reversed(list(cached_messages.values())):
+            if message and self._get_ordered_text_choice_sequence(message):
+                return message
+
+        async def load_history() -> list[Message]:
+            return [
+                message
+                async for message in self.app.get_chat_history(
+                    chat.chat_id,
+                    limit=limit,
+                )
+            ]
+
+        try:
+            messages = await self._call_telegram_api(
+                "messages.GetHistory",
+                load_history,
+            )
+        except Exception as exc:
+            self.log(f"读取最近消息失败，继续等待新题面: {exc}", level="WARNING")
+            return None
+
+        for message in messages:
+            message_date = getattr(message, "date", None)
+            if isinstance(message_date, datetime):
+                current_time = (
+                    datetime.now(message_date.tzinfo)
+                    if message_date.tzinfo
+                    else datetime.now()
+                )
+                if (current_time - message_date).total_seconds() > 180:
+                    continue
+            if (
+                chat.message_thread_id is not None
+                and getattr(message, "message_thread_id", None)
+                != chat.message_thread_id
+            ):
+                continue
+            if not self._get_ordered_text_choice_sequence(message):
+                continue
+            self.context.chat_messages[route_key][message.id] = message
+            self.log("检测到历史消息中的未完成按钮目标序列，继续处理")
+            return message
+        return None
+
     def _callback_answer_matches_terminal_state(
         self, action: ClickKeyboardByTextAction, answer
     ) -> bool:
@@ -1824,16 +2087,17 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return False
 
     async def _get_webview_url_from_button(
-        self, message: Message, button: InlineKeyboardButton
+        self, message: Message, button: Any
     ) -> Optional[str]:
         from pyrogram.raw.functions.messages import RequestWebView
 
         raw_url = None
-        if button.web_app:
-            raw_url = button.web_app.url
-        elif button.url:
+        web_app = getattr(button, "web_app", None)
+        if web_app:
+            raw_url = getattr(web_app, "url", None)
+        elif getattr(button, "url", None):
             raw_url = button.url
-        elif button.login_url:
+        elif getattr(button, "login_url", None):
             raw_url = button.login_url.url
 
         if not raw_url:
@@ -1874,6 +2138,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         action: OpenWebAppByTextAction,
         webview_url: str,
         route_key: Optional[RouteKey] = None,
+        webapp_bot_id: Optional[int] = None,
+        webapp_button_text: Optional[str] = None,
     ) -> bool:
         try:
             from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -1893,6 +2159,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 try:
                     if action.turnstile_enabled:
                         await page.add_init_script(TURNSTILE_HOOK_SCRIPT)
+                    if webapp_bot_id and webapp_button_text:
+                        await page.add_init_script(WEBAPP_SEND_DATA_HOOK_SCRIPT)
 
                     response_future = None
                     if action.response_url_contains:
@@ -1943,39 +2211,72 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     if not await self._maybe_solve_webapp_captcha(action, page):
                         return False
 
-                    click_attempts = 2 if action.turnstile_retry_after_solve else 1
-                    for _click_attempt in range(click_attempts):
-                        button = page.get_by_role(
-                            "button", name=action.page_button_text, exact=False
-                        ).first
-                        try:
-                            await button.wait_for(
-                                state="visible", timeout=action.button_timeout * 1000
-                            )
-                        except PlaywrightTimeoutError:
-                            button = page.get_by_text(
-                                action.page_button_text, exact=False
+                    if action.page_button_text:
+                        click_attempts = 2 if action.turnstile_retry_after_solve else 1
+                        for _click_attempt in range(click_attempts):
+                            button = page.get_by_role(
+                                "button", name=action.page_button_text, exact=False
                             ).first
-                            await button.wait_for(
-                                state="visible", timeout=action.button_timeout * 1000
+                            try:
+                                await button.wait_for(
+                                    state="visible",
+                                    timeout=action.button_timeout * 1000,
+                                )
+                            except PlaywrightTimeoutError:
+                                button = page.get_by_text(
+                                    action.page_button_text, exact=False
+                                ).first
+                                await button.wait_for(
+                                    state="visible",
+                                    timeout=action.button_timeout * 1000,
+                                )
+
+                            await button.click(timeout=action.button_timeout * 1000)
+                            self.log(
+                                f"已在 WebApp 中点击按钮: {action.page_button_text}"
                             )
 
-                        await button.click(timeout=action.button_timeout * 1000)
-                        self.log(f"已在 WebApp 中点击按钮: {action.page_button_text}")
-
+                            turnstile_result = (
+                                await self._handle_turnstile_after_button_click(
+                                    action, page
+                                )
+                            )
+                            if turnstile_result == "retry":
+                                self.log(
+                                    "Cloudflare Turnstile 已处理，准备重新点击业务按钮。"
+                                )
+                                continue
+                            if turnstile_result == "blocked":
+                                return False
+                            break
+                    elif action.turnstile_enabled:
                         turnstile_result = (
                             await self._handle_turnstile_after_button_click(
                                 action, page
                             )
                         )
-                        if turnstile_result == "retry":
-                            self.log(
-                                "Cloudflare Turnstile 已处理，准备重新点击业务按钮。"
-                            )
-                            continue
                         if turnstile_result == "blocked":
                             return False
-                        break
+                        if not await self._is_turnstile_visible(page):
+                            if not await self._has_turnstile_token(page):
+                                self.log(
+                                    "WebApp 未找到 Turnstile 控件，无法完成自动验证。",
+                                    level="WARNING",
+                                )
+                                return False
+                        self.log("WebApp 无页面按钮，等待 Turnstile 自动回传。")
+                        if not await self._wait_for_turnstile_passed(
+                            page, action.turnstile_timeout
+                        ):
+                            self.log("Turnstile 未在限定时间内通过。", level="WARNING")
+                            return False
+                        if webapp_bot_id and webapp_button_text:
+                            if not await self._forward_webapp_data(
+                                page,
+                                webapp_bot_id,
+                                webapp_button_text,
+                            ):
+                                return False
 
                     if response_future is not None:
                         self.log(
@@ -2038,6 +2339,54 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         except Exception as e:
             self.log(f"WebApp 页面操作失败: {e}", level="ERROR")
             return False
+
+    async def _forward_webapp_data(
+        self,
+        page: Any,
+        bot_id: int,
+        button_text: str,
+        timeout: float = 15.0,
+    ) -> bool:
+        """将独立浏览器捕获的 WebApp sendData 通过 Telegram 原生接口回传。"""
+        from pyrogram.raw.functions.messages import SendWebViewData
+        from pyrogram.raw.types import InputPeerUser, InputUser
+
+        start = time.perf_counter()
+        while time.perf_counter() - start < timeout:
+            try:
+                data = await page.evaluate(
+                    """() => {
+                        const values = window.__tgSignerWebAppData || [];
+                        return values.length ? values[0] : null;
+                    }"""
+                )
+            except Exception as exc:
+                self.log(f"读取 WebApp sendData 失败: {exc}", level="WARNING")
+                return False
+            if data:
+                try:
+                    bot_peer = await self.app.resolve_peer(bot_id)
+                    if isinstance(bot_peer, InputPeerUser):
+                        bot_peer = InputUser(
+                            user_id=bot_peer.user_id,
+                            access_hash=bot_peer.access_hash,
+                        )
+                    await self.app.invoke(
+                        SendWebViewData(
+                            bot=bot_peer,
+                            random_id=random.randrange(1, 2**63),
+                            button_text=button_text,
+                            data=str(data),
+                        )
+                    )
+                    self.log("已将 WebApp sendData 回传 Telegram")
+                    return True
+                except Exception as exc:
+                    self.log(f"回传 WebApp sendData 失败: {exc}", level="ERROR")
+                    return False
+            await asyncio.sleep(0.2)
+        self.log("等待 WebApp sendData 超时", level="WARNING")
+        return False
 
     async def _wait_for_webapp_telegram_success(
         self, route_key: Optional[RouteKey], action: OpenWebAppByTextAction
@@ -2205,8 +2554,12 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return {
                   sitekey: last?.sitekey || widget?.dataset?.sitekey || null,
                   action: last?.action || widget?.dataset?.action || null,
-                  data: last?.data || widget?.dataset?.cData || null,
-                  pagedata: last?.pagedata || widget?.dataset?.chlPageData || null,
+                  data: last?.data || widget?.dataset?.cData
+                    || widget?.dataset?.cdata
+                    || widget?.getAttribute('data-cdata') || null,
+                  pagedata: last?.pagedata || widget?.dataset?.chlPageData
+                    || widget?.dataset?.pagedata
+                    || widget?.getAttribute('data-chl-page-data') || null,
                   hasResponseInput: Boolean(responseInput),
                   token: state.lastToken || responseInput?.value || null,
                 };
@@ -2321,6 +2674,24 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     if (typeof state.callback === 'function') {
                       state.callback(turnstileToken);
                       applied = true;
+                    }
+                    const callbacks = [
+                      window.onTurnstileSuccess,
+                      window.onTurnstileSuccessCallback,
+                    ];
+                    for (const callback of callbacks) {
+                      if (
+                        typeof callback !== 'function' ||
+                        callback === state.callback
+                      ) {
+                        continue;
+                      }
+                      try {
+                        callback(turnstileToken);
+                        applied = true;
+                      } catch (error) {
+                        console.debug("tg-signer Turnstile callback failed", error);
+                      }
                     }
                     return applied;
                 }""",
@@ -2956,44 +3327,66 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ) -> bool:
         if reply_markup := message.reply_markup:
             if isinstance(reply_markup, InlineKeyboardMarkup):
-                for btn in (
-                    b for row in reply_markup.inline_keyboard for b in row if b.text
+                buttons = [
+                    button
+                    for row in reply_markup.inline_keyboard
+                    for button in row
+                    if button.text
+                ]
+            elif isinstance(reply_markup, ReplyKeyboardMarkup):
+                buttons = [
+                    button
+                    for row in reply_markup.keyboard
+                    for button in row
+                    if button.text
+                ]
+            else:
+                buttons = []
+
+            for btn in buttons:
+                if action.text not in btn.text:
+                    continue
+                if (
+                    getattr(btn, "web_app", None)
+                    or getattr(btn, "url", None)
+                    or getattr(btn, "login_url", None)
                 ):
-                    if action.text not in btn.text:
-                        continue
-                    if btn.web_app or btn.url or btn.login_url:
-                        self.log(f"打开小程序按钮: {btn.text}")
-                        webview_url = await self._get_webview_url_from_button(
-                            message, btn
-                        )
-                        if not webview_url:
-                            self.log("未能获取小程序链接", level="WARNING")
-                            return False
-                        route_key = self.get_route_key(
-                            message.chat.id,
-                            getattr(message, "message_thread_id", None),
-                        )
-                        return await self._run_webapp_page_action(
-                            action,
-                            webview_url,
-                            route_key=route_key,
-                        )
-                    if btn.callback_data:
-                        self.log(
-                            f"按钮「{btn.text}」不是 WebApp/URL 按钮，先按普通按钮处理"
-                        )
-                        answer = await self.request_callback_answer(
-                            self.app,
-                            message.chat.id,
-                            message.id,
-                            btn.callback_data,
-                        )
-                        return answer is not None
-                    self.log(
-                        f"按钮「{btn.text}」既不是 WebApp/URL 按钮，也不是可点击回调按钮，跳过",
-                        level="WARNING",
+                    self.log(f"打开小程序按钮: {btn.text}")
+                    webview_url = await self._get_webview_url_from_button(message, btn)
+                    if not webview_url:
+                        self.log("未能获取小程序链接", level="WARNING")
+                        return False
+                    route_key = self.get_route_key(
+                        message.chat.id,
+                        getattr(message, "message_thread_id", None),
                     )
-                    return False
+                    bot_id = getattr(
+                        getattr(message, "from_user", None), "id", None
+                    ) or getattr(message.chat, "id", None)
+                    return await self._run_webapp_page_action(
+                        action,
+                        webview_url,
+                        route_key=route_key,
+                        webapp_bot_id=bot_id,
+                        webapp_button_text=btn.text,
+                    )
+                callback_data = getattr(btn, "callback_data", None)
+                if callback_data:
+                    self.log(
+                        f"按钮「{btn.text}」不是 WebApp/URL 按钮，先按普通按钮处理"
+                    )
+                    answer = await self.request_callback_answer(
+                        self.app,
+                        message.chat.id,
+                        message.id,
+                        callback_data,
+                    )
+                    return answer is not None
+                self.log(
+                    f"按钮「{btn.text}」既不是 WebApp/URL 按钮，也不是可点击回调按钮，跳过",
+                    level="WARNING",
+                )
+                return False
         return False
 
     async def _reply_by_calculation_problem(
@@ -4640,6 +5033,37 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if isinstance(action, ChooseOptionByGifAction):
             return await self._wait_for_gif_action(chat, action, timeout)
         route_key = self.get_runtime_route_key(chat)
+        if isinstance(action, ClickKeyboardByTextAction):
+            pending_message = await self._find_recent_keyboard_message(
+                chat, action.text
+            )
+            if pending_message is not None:
+                self.context.waiting_message = pending_message
+                ok = await self._click_keyboard_by_text(action, pending_message)
+                self.context.waiting_message = None
+                if ok:
+                    self.context.chat_messages[route_key][pending_message.id] = None
+                    return None
+        if isinstance(action, OpenWebAppByTextAction):
+            pending_message = await self._find_recent_keyboard_message(
+                chat, action.text
+            )
+            if pending_message is not None:
+                self.context.waiting_message = pending_message
+                ok = await self._open_webapp_by_text(action, pending_message)
+                self.context.waiting_message = None
+                self.context.chat_messages[route_key][pending_message.id] = None
+                if ok:
+                    return None
+        if isinstance(action, ChooseOptionByTextAction):
+            pending_message = await self._find_recent_ordered_text_choice_message(chat)
+            if pending_message is not None:
+                self.context.waiting_message = pending_message
+                ok = await self._choose_option_by_text(action, pending_message)
+                self.context.waiting_message = None
+                if ok:
+                    self.context.chat_messages[route_key][pending_message.id] = None
+                    return None
         self.context.waiter.add(route_key)
         start = time.perf_counter()
         last_message = None
