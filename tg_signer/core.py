@@ -1859,7 +1859,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     ) -> list[str]:
         """从明确标注的目标序列中按出现顺序提取按钮文本。"""
         normalized_prompt = prompt_text.lower()
-        markers = ("目标序列", "目标顺序", "target sequence", "target order")
+        # 部分机器人直接使用“按顺序点击”描述验证，不使用“目标序列”字样。
+        markers = (
+            "目标序列",
+            "目标顺序",
+            "按顺序点击",
+            "target sequence",
+            "target order",
+            "click in order",
+        )
         marker_matches = [
             (normalized_prompt.find(marker), marker)
             for marker in markers

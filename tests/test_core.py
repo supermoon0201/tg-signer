@@ -1419,6 +1419,22 @@ def test_extract_ordered_button_sequence_reverses_right_to_left(tmp_path):
     assert sequence == ["🤫", "🍍", "🗺️", "🍹", "🚗"]
 
 
+def test_extract_ordered_button_sequence_supports_direct_click_prompt(tmp_path):
+    signer = UserSigner(
+        task_name="task",
+        account="acct",
+        session_dir=tmp_path,
+        workdir=tmp_path / ".signer",
+    )
+
+    sequence = signer._extract_ordered_button_sequence(
+        "🛡️ 签到安全验证\n请在 60 秒内按顺序点击：🐙 → 🐼",
+        ["🦁", "🐙", "🐸", "🐼"],
+    )
+
+    assert sequence == ["🐙", "🐼"]
+
+
 @pytest.mark.asyncio
 async def test_choose_option_by_text_handles_multi_blank_prompt(monkeypatch, tmp_path):
     signer = UserSigner(

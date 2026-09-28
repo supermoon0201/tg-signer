@@ -292,7 +292,7 @@ Random time deviation in seconds (default is 0): 300
 
 ### Ordered Emoji Challenge
 
-Action `9: Select an option based on message text or a target sequence` supports ordered Telegram InlineKeyboard challenges. When a message explicitly contains `target sequence`, `target order`, `目标序列`, or `目标顺序`, it extracts matching button Emoji/text after that marker and clicks the buttons from left to right.
+Action `9: Select an option based on message text or a target sequence` supports ordered Telegram InlineKeyboard challenges. When a message explicitly contains `target sequence`, `target order`, `click in order`, `目标序列`, `目标顺序`, or `按顺序点击`, it extracts matching button Emoji/text after that marker and clicks the buttons from left to right.
 
 This deterministic path does not call the LLM and treats Emoji variants such as `⚪` and `⚪️` as the same button. Regular text questions continue to use the configured LLM.
 
