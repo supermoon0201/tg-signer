@@ -26,6 +26,32 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
+async def test_choose_option_by_text_uses_first_index_from_list_response():
+    class _ListOptionCompletions:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"option":[1,3],"reason":"multi-blank"}'
+                        )
+                    )
+                ]
+            )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_ListOptionCompletions()))
+    tools = AITools({"api_key": "test-key", "model": "gpt-4o-mini"})
+
+    result = await tools.choose_option_by_text(
+        "题面包含两个空",
+        [(0, "甲"), (1, "乙"), (2, "丙"), (3, "丁")],
+        client=client,
+    )
+
+    assert result == 1
+
+
+@pytest.mark.asyncio
 async def test_get_openai_client_falls_back_to_httpx_when_openai_import_breaks(
     monkeypatch,
 ):

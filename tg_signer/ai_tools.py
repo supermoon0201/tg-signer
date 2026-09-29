@@ -171,6 +171,7 @@ class AITools:
   "reason": "这么选择的原因，30字以内"
 }
 option字段表示你选择的选项序号，从0开始。
+每次只需要为当前消息选择一个按钮；即使题面包含多个空，程序也会逐个刷新处理，仍只返回当前应点击的一个选项序号，不要返回数组。
 """
         client = client or self.client
         model = model or self.default_model
@@ -195,7 +196,13 @@ option字段表示你选择的选项序号，从0开始。
             raise ValueError("OpenAI API 返回空结果，可能是内容审核或 API 错误。")
         message = completion.choices[0].message
         result = json_repair.loads(message.content)
-        return int(result["option"])
+        option = result["option"]
+        if isinstance(option, list):
+            if not option:
+                raise ValueError("OpenAI API 返回的 option 列表为空。")
+            # 多空题可能返回所有答案索引，调用方会逐题刷新并继续点击。
+            option = option[0]
+        return int(option)
 
     async def choose_option_by_image(
         self,
