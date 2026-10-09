@@ -348,6 +348,8 @@ tg-signer run linuxdo
 
 #### Cloudflare Turnstile / 2Captcha
 
+对于西瓜机器人这类验证后显示“完成验证”的页面，action 8 会自动识别带 `return_bot` 的链接，等待页面返回按钮并通过 Telegram 完成验证，再等待 `telegram_success_text`。此流程保持 `page_button_text: null`，无需修改现有配置；原有 `sendData` 回传方式仍受支持。
+
 部分站点会在 WebApp 中弹出 Cloudflare Turnstile，例如：
 
 - 点击 `验证并签到`

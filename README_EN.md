@@ -356,6 +356,8 @@ This template is suitable when you want to:
 
 #### Cloudflare Turnstile / 2Captcha
 
+For verification pages that display a completion link (such as XGFree_bot), action 8 detects `return_bot`, waits for the return button, completes verification through Telegram, and then waits for `telegram_success_text`. Keep `page_button_text: null`; existing configs need no changes. The original `sendData` flow remains supported.
+
 For WebApps that show Cloudflare Turnstile, configure:
 
 - `turnstile_enabled`

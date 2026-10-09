@@ -2069,7 +2069,10 @@ async def test_run_webapp_page_action_waits_for_telegram_success(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_run_webapp_page_action_waits_without_page_button(monkeypatch, tmp_path):
+@pytest.mark.parametrize("return_bot", [False, True])
+async def test_run_webapp_page_action_waits_without_page_button(
+    monkeypatch, tmp_path, return_bot
+):
     signer = UserSigner(
         task_name="task",
         account="acct",
@@ -2140,14 +2143,61 @@ async def test_run_webapp_page_action_waits_without_page_button(monkeypatch, tmp
     monkeypatch.setattr(
         signer, "_handle_turnstile_after_button_click", AsyncMock(return_value="done")
     )
+    forward_data = AsyncMock(return_value=True)
+    complete_return = AsyncMock(return_value=True)
+    monkeypatch.setattr(signer, "_forward_webapp_data", forward_data)
+    monkeypatch.setattr(signer, "_complete_webapp_return", complete_return)
 
     ok = await signer._run_webapp_page_action(
         action,
-        "https://verify.example/auth",
+        "https://verify.example/auth" + ("?return_bot=test_bot" if return_bot else ""),
         route_key=route_key,
+        webapp_bot_id=123,
+        webapp_button_text="开始验证",
     )
 
     assert ok is True
+    assert complete_return.await_count == int(return_bot)
+    assert forward_data.await_count == int(not return_bot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url,peer_id,expected",
+    [
+        ("https://t.me/test_bot?start=receipt_123", 123, True),
+        ("tg://resolve?domain=test_bot&start=receipt_123", 123, True),
+        ("https://t.me/test_bot?start=receipt_123", 456, False),
+        ("https://example.com/test_bot?start=receipt_123", 123, False),
+        ("https://t.me/test_bot", 123, False),
+    ],
+)
+async def test_complete_webapp_return(monkeypatch, tmp_path, url, peer_id, expected):
+    from pyrogram.raw.types import InputPeerUser
+
+    signer = UserSigner(
+        task_name="task", account="acct", session_dir=tmp_path, workdir=tmp_path
+    )
+    button = SimpleNamespace(
+        wait_for=AsyncMock(), get_attribute=AsyncMock(return_value=url)
+    )
+    page = SimpleNamespace(locator=MagicMock(return_value=button))
+    invoke = AsyncMock()
+    monkeypatch.setattr(signer.app, "invoke", invoke)
+    monkeypatch.setattr(
+        signer.app,
+        "resolve_peer",
+        AsyncMock(return_value=InputPeerUser(user_id=peer_id, access_hash=7)),
+    )
+
+    assert await signer._complete_webapp_return(page, 123) is expected
+    if expected:
+        request = invoke.await_args.args[0]
+        assert request.QUALNAME == "functions.messages.StartBot"
+        assert request.start_param == "receipt_123"
+        assert request.bot.user_id == 123
+    else:
+        invoke.assert_not_awaited()
 
 
 @pytest.mark.asyncio

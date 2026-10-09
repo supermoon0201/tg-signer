@@ -2279,11 +2279,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                             self.log("Turnstile 未在限定时间内通过。", level="WARNING")
                             return False
                         if webapp_bot_id and webapp_button_text:
-                            if not await self._forward_webapp_data(
-                                page,
-                                webapp_bot_id,
-                                webapp_button_text,
-                            ):
+                            # 新版验证页通过机器人深链接返回，不再发送 sendData。
+                            return_bot = parse.parse_qs(
+                                parse.urlsplit(webview_url).query
+                            ).get("return_bot")
+                            if return_bot:
+                                forwarded = await self._complete_webapp_return(
+                                    page, webapp_bot_id, action.response_timeout
+                                )
+                            else:
+                                forwarded = await self._forward_webapp_data(
+                                    page, webapp_bot_id, webapp_button_text
+                                )
+                            if not forwarded:
                                 return False
 
                     if response_future is not None:
@@ -2346,6 +2354,57 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                     await browser.close()
         except Exception as e:
             self.log(f"WebApp 页面操作失败: {e}", level="ERROR")
+            return False
+
+    async def _complete_webapp_return(
+        self, page: Any, bot_id: int, timeout: float = 15.0
+    ) -> bool:
+        """读取验证成功后的返回链接，通过 Telegram 接口完成验证。"""
+        from pyrogram.raw.functions.messages import StartBot
+        from pyrogram.raw.types import InputUser
+
+        try:
+            button = page.locator("#return-bot")
+            await button.wait_for(state="visible", timeout=timeout * 1000)
+            return_url = await button.get_attribute("href")
+            parts = parse.urlsplit(return_url or "")
+            query = parse.parse_qs(parts.query)
+            if parts.scheme == "https" and parts.netloc == "t.me":
+                username = parts.path.strip("/")
+            elif parts.scheme == "tg" and parts.netloc == "resolve":
+                username = (query.get("domain") or [""])[0]
+            else:
+                self.log("验证返回链接不是受支持的 Telegram 链接。", level="ERROR")
+                return False
+            start_param = (query.get("start") or [""])[0]
+            if not username or "/" in username or not start_param:
+                self.log("验证返回链接缺少机器人或 start 参数。", level="ERROR")
+                return False
+            # 限定为当前机器人，避免网页将验证结果发送给其他账号。
+            peer = await self._call_telegram_api(
+                "contacts.ResolveUsername", lambda: self.app.resolve_peer(username)
+            )
+            if getattr(peer, "user_id", None) != bot_id:
+                self.log("验证返回链接的机器人与当前任务不一致。", level="ERROR")
+                return False
+            await self._call_telegram_api(
+                "messages.StartBot",
+                lambda: self.app.invoke(
+                    StartBot(
+                        bot=InputUser(
+                            user_id=peer.user_id, access_hash=peer.access_hash
+                        ),
+                        peer=peer,
+                        random_id=random.randrange(1, 2**63),
+                        start_param=start_param,
+                    )
+                ),
+            )
+            self.log("已通过 Telegram 返回链接完成验证，等待机器人签到结果。")
+            return True
+        except Exception as exc:
+            # 异常可能含有一次性凭据，不将链接及请求参数写入日志。
+            self.log(f"完成 WebApp 返回验证失败: {type(exc).__name__}", level="ERROR")
             return False
 
     async def _forward_webapp_data(
