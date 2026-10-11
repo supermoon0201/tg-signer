@@ -2147,6 +2147,8 @@ async def test_run_webapp_page_action_waits_without_page_button(
     complete_return = AsyncMock(return_value=True)
     monkeypatch.setattr(signer, "_forward_webapp_data", forward_data)
     monkeypatch.setattr(signer, "_complete_webapp_return", complete_return)
+    verify_return = AsyncMock(return_value=True)
+    monkeypatch.setattr(signer, "_verify_webapp_return", verify_return)
 
     ok = await signer._run_webapp_page_action(
         action,
@@ -2158,7 +2160,73 @@ async def test_run_webapp_page_action_waits_without_page_button(
 
     assert ok is True
     assert complete_return.await_count == int(return_bot)
+    assert verify_return.await_count == int(return_bot)
     assert forward_data.await_count == int(not return_bot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "states,expected,attempts",
+    [
+        (["ready"], True, 1),
+        (["error", "ready"], True, 2),
+        ([TimeoutError(), "ready"], True, 2),
+        (["error", "error", "error"], False, 3),
+    ],
+)
+async def test_verify_webapp_return_retries_failed_page(
+    monkeypatch, tmp_path, states, expected, attempts
+):
+    signer = UserSigner(
+        task_name="task", account="acct", session_dir=tmp_path, workdir=tmp_path
+    )
+    handles = [
+        state
+        if isinstance(state, Exception)
+        else SimpleNamespace(
+            json_value=AsyncMock(return_value=state), dispose=AsyncMock()
+        )
+        for state in states
+    ]
+    page = SimpleNamespace(
+        reload=AsyncMock(return_value=SimpleNamespace(status=200)),
+        wait_for_function=AsyncMock(side_effect=handles),
+    )
+    solve = AsyncMock(return_value="done")
+    monkeypatch.setattr(signer, "_handle_turnstile_after_button_click", solve)
+
+    assert (
+        await signer._verify_webapp_return(
+            OpenWebAppByTextAction(text="开始验证"), page
+        )
+        is expected
+    )
+    assert solve.await_count == attempts
+    assert page.reload.await_count == attempts - 1
+    assert page.wait_for_function.await_args.kwargs["timeout"] == 25000
+    for handle in handles:
+        if not isinstance(handle, Exception):
+            handle.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_verify_webapp_return_stops_on_expired_link(monkeypatch, tmp_path):
+    signer = UserSigner(
+        task_name="task", account="acct", session_dir=tmp_path, workdir=tmp_path
+    )
+    handle = SimpleNamespace(
+        json_value=AsyncMock(return_value="error"), dispose=AsyncMock()
+    )
+    page = SimpleNamespace(
+        reload=AsyncMock(return_value=SimpleNamespace(status=400)),
+        wait_for_function=AsyncMock(return_value=handle),
+    )
+    solve = AsyncMock(return_value="done")
+    monkeypatch.setattr(signer, "_handle_turnstile_after_button_click", solve)
+    assert not await signer._verify_webapp_return(
+        OpenWebAppByTextAction(text="开始验证"), page
+    )
+    solve.assert_awaited_once()
 
 
 @pytest.mark.asyncio

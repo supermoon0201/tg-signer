@@ -2258,41 +2258,45 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                                 return False
                             break
                     elif action.turnstile_enabled:
-                        turnstile_result = (
-                            await self._handle_turnstile_after_button_click(
-                                action, page
+                        return_bot = parse.parse_qs(
+                            parse.urlsplit(webview_url).query
+                        ).get("return_bot")
+                        if return_bot and webapp_bot_id and webapp_button_text:
+                            if not await self._verify_webapp_return(action, page):
+                                return False
+                            if not await self._complete_webapp_return(
+                                page, webapp_bot_id, action.response_timeout
+                            ):
+                                return False
+                        else:
+                            turnstile_result = (
+                                await self._handle_turnstile_after_button_click(
+                                    action, page
+                                )
                             )
-                        )
-                        if turnstile_result == "blocked":
-                            return False
-                        if not await self._is_turnstile_visible(page):
-                            if not await self._has_turnstile_token(page):
+                            if turnstile_result == "blocked":
+                                return False
+                            if not await self._is_turnstile_visible(page):
+                                if not await self._has_turnstile_token(page):
+                                    self.log(
+                                        "WebApp 未找到 Turnstile 控件，无法完成自动验证。",
+                                        level="WARNING",
+                                    )
+                                    return False
+                            self.log("WebApp 无页面按钮，等待 Turnstile 自动回传。")
+                            if not await self._wait_for_turnstile_passed(
+                                page, action.turnstile_timeout
+                            ):
                                 self.log(
-                                    "WebApp 未找到 Turnstile 控件，无法完成自动验证。",
-                                    level="WARNING",
+                                    "Turnstile 未在限定时间内通过。", level="WARNING"
                                 )
                                 return False
-                        self.log("WebApp 无页面按钮，等待 Turnstile 自动回传。")
-                        if not await self._wait_for_turnstile_passed(
-                            page, action.turnstile_timeout
-                        ):
-                            self.log("Turnstile 未在限定时间内通过。", level="WARNING")
-                            return False
-                        if webapp_bot_id and webapp_button_text:
-                            # 新版验证页通过机器人深链接返回，不再发送 sendData。
-                            return_bot = parse.parse_qs(
-                                parse.urlsplit(webview_url).query
-                            ).get("return_bot")
-                            if return_bot:
-                                forwarded = await self._complete_webapp_return(
-                                    page, webapp_bot_id, action.response_timeout
-                                )
-                            else:
+                            if webapp_bot_id and webapp_button_text:
                                 forwarded = await self._forward_webapp_data(
                                     page, webapp_bot_id, webapp_button_text
                                 )
-                            if not forwarded:
-                                return False
+                                if not forwarded:
+                                    return False
 
                     if response_future is not None:
                         self.log(
@@ -2355,6 +2359,73 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         except Exception as e:
             self.log(f"WebApp 页面操作失败: {e}", level="ERROR")
             return False
+
+    async def _verify_webapp_return(
+        self, action: OpenWebAppByTextAction, page: Any
+    ) -> bool:
+        """以返回按钮判定业务验证成功，失败时刷新页面并获取新的验证码。"""
+        for attempt in range(3):
+            if attempt:
+                self.log(f"重新加载 WebApp 验证页面，第 {attempt + 1}/3 次尝试。")
+                response = await page.reload(
+                    wait_until="domcontentloaded",
+                    timeout=action.page_load_timeout * 1000,
+                )
+                if response is not None and response.status >= 400:
+                    self.log(
+                        f"验证页面返回 HTTP {response.status}，请重新发起签到。",
+                        level="WARNING",
+                    )
+                    return False
+
+            result = await self._handle_turnstile_after_button_click(action, page)
+            if result == "blocked":
+                continue
+            try:
+                # 页面可能在等待解题期间进入 failed 状态；有 token 不代表已提交。
+                state_handle = await page.wait_for_function(
+                    """() => {
+                        const visible = (el) => el && !el.hidden &&
+                            el.getBoundingClientRect().width > 0 &&
+                            el.getBoundingClientRect().height > 0 &&
+                            getComputedStyle(el).visibility !== 'hidden';
+                        const button = document.querySelector('#return-bot');
+                        if (visible(button) &&
+                            button.getAttribute('href')) {
+                            return 'ready';
+                        }
+                        const status = document.querySelector('#status');
+                        const retry = document.querySelector('#retry');
+                        if (status?.classList.contains('error') ||
+                            visible(retry)) {
+                            return 'error';
+                        }
+                        return false;
+                    }""",
+                    # 页面自身的验证请求允许等待 20 秒，不能在 15 秒提前关闭。
+                    timeout=max(action.response_timeout, 25) * 1000,
+                )
+                try:
+                    state = await state_handle.json_value()
+                finally:
+                    await state_handle.dispose()
+            except Exception as exc:
+                if (
+                    not isinstance(exc, TimeoutError)
+                    and type(exc).__name__ != "TimeoutError"
+                ):
+                    raise
+                state = "timeout"
+            if state == "ready":
+                self.log("WebApp 服务端验证完成，已出现返回机器人按钮。")
+                return True
+            # 仅记录固定状态，避免页面提示夹带一次性凭据或验证链接。
+            reason = "页面报告验证错误" if state == "error" else "等待验证结果超时"
+            self.log(
+                f"WebApp 第 {attempt + 1}/3 次验证失败：{reason}。", level="WARNING"
+            )
+        self.log("WebApp 验证连续失败 3 次，停止本次操作。", level="ERROR")
+        return False
 
     async def _complete_webapp_return(
         self, page: Any, bot_id: int, timeout: float = 15.0
@@ -2846,7 +2917,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         if action.turnstile_use_2captcha:
             solved = await self._solve_turnstile_with_2captcha(action, page)
             if solved:
-                self.log("Cloudflare Turnstile 已通过 2captcha 处理。")
+                self.log("2captcha 已完成 Turnstile token 注入，继续确认业务验证结果。")
                 return "retry" if action.turnstile_retry_after_solve else "done"
 
         self.log(

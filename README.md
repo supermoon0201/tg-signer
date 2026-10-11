@@ -350,6 +350,8 @@ tg-signer run linuxdo
 
 对于西瓜机器人这类验证后显示“完成验证”的页面，action 8 会自动识别带 `return_bot` 的链接，等待页面返回按钮并通过 Telegram 完成验证，再等待 `telegram_success_text`。此流程保持 `page_button_text: null`，无需修改现有配置；原有 `sendData` 回传方式仍受支持。
 
+该流程以返回按钮出现作为网页验证完成依据，不会仅凭 token 注入就认定成功。页面报错或结果超时后会刷新页面并重新解题，最多尝试 3 次；每次等待结果至少 25 秒。若链接已过期（HTTP 400），停止操作并提示重新发起签到。
+
 部分站点会在 WebApp 中弹出 Cloudflare Turnstile，例如：
 
 - 点击 `验证并签到`

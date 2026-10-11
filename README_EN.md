@@ -358,6 +358,8 @@ This template is suitable when you want to:
 
 For verification pages that display a completion link (such as XGFree_bot), action 8 detects `return_bot`, waits for the return button, completes verification through Telegram, and then waits for `telegram_success_text`. Keep `page_button_text: null`; existing configs need no changes. The original `sendData` flow remains supported.
 
+This flow requires the return button to appear; token injection alone does not establish verification success. Page errors or result timeouts reload the page and solve a fresh challenge, with at most three attempts and a result wait of at least 25 seconds per attempt. An expired link (HTTP 400) stops the operation and requires a new check-in flow.
+
 For WebApps that show Cloudflare Turnstile, configure:
 
 - `turnstile_enabled`
