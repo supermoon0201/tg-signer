@@ -5,7 +5,8 @@
   "_usage": [
     "将本文件复制到 <workdir>/signs/<task_name>/config.json",
     "如 Bot 用户名、chat_id 或按钮文本不同，请按实际情况修改",
-    "本模板适用于 t.me/<bot>/miniapp 这类 Bot App short name MiniApp 入口"
+    "Bot 内算术选择题使用动作 9，需要配置大模型",
+    "面板签到使用 Bot 的主小程序入口"
   ],
   "chats": [
     {
@@ -22,9 +23,13 @@
           "text": "🎯 签到"
         },
         {
+          "action": 9
+        },
+        {
           "action": 10,
           "bot_username": "zzmeb_bot",
-          "webapp_short_name": "miniapp",
+          "webapp_use_main": true,
+          "api_base_url": "https://user.090911.xyz",
           "auth_endpoint": "/api/auth/telegram",
           "profile_endpoint": "/api/miniapp/bootstrap",
           "checkin_endpoint": "/api/user/checkin",

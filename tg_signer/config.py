@@ -375,11 +375,12 @@ class SessionPanelCheckinAction(SignAction):
     action: Literal[SupportAction.SESSION_PANEL_CHECKIN] = (
         SupportAction.SESSION_PANEL_CHECKIN
     )
-    bot_username: str  # bot 的用户名，用于获取 WebApp 菜单按钮与 initData
+    bot_username: str  # Bot 用户名，用于获取 WebApp 入口与 initData
     webapp_short_name: Optional[str] = (
         None  # Bot App short name，适用于 t.me/<bot>/<short_name> 形式的 MiniApp
     )
-    api_base_url: Optional[str] = None  # API 基础URL，留空则从菜单按钮URL推导
+    webapp_use_main: bool = False  # 显式使用主小程序入口，优先于短名和菜单按钮
+    api_base_url: Optional[str] = None  # API 基础 URL，留空则从小程序 URL 推导
     auth_endpoint: str = "/api/auth/telegram"  # 用 initData 换 session 的接口
     profile_endpoint: str = "/api/user/profile"  # 查询用户资料(含已签状态)的接口
     checkin_endpoint: str = "/api/user/checkin"  # 签到接口

@@ -3348,7 +3348,7 @@ def _make_session_panel_signer(tmp_path, monkeypatch):
         workdir=tmp_path / ".signer",
     )
 
-    async def fake_init_data(bot_username, webapp_short_name=None):
+    async def fake_init_data(bot_username, webapp_short_name=None, *, use_main=False):
         return "https://panel.example.com/", "query_id=abc&user=%7B%7D&hash=deadbeef"
 
     monkeypatch.setattr(signer, "_get_webapp_init_data", fake_init_data)
@@ -3563,7 +3563,49 @@ async def test_session_panel_checkin_passes_short_name_to_init_data_loader(
     ok = await signer._session_panel_checkin(action)
 
     assert ok is True
-    signer._get_webapp_init_data.assert_awaited_once_with("zzmeb_bot", "miniapp")
+    signer._get_webapp_init_data.assert_awaited_once_with(
+        "zzmeb_bot", "miniapp", use_main=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_panel_checkin_uses_main_webapp(monkeypatch, signer_factory):
+    signer = signer_factory()
+    signer.app = SimpleNamespace(
+        key="main-webapp-test",
+        resolve_peer=AsyncMock(return_value="bot-peer"),
+        invoke=AsyncMock(
+            return_value=SimpleNamespace(
+                url="https://panel.example.com/#tgWebAppData=user%3D%257B%257D"
+            )
+        ),
+    )
+    action = SessionPanelCheckinAction(
+        bot_username="zzmeb_bot",
+        webapp_short_name="miniapp",
+        webapp_use_main=True,
+        profile_endpoint="/api/miniapp/bootstrap",
+    )
+    client = _SessionPanelClient(
+        {
+            "/api/auth/telegram": {"ok": True},
+            "/api/miniapp/bootstrap": {"data": {"profile": {"checkedInToday": True}}},
+        }
+    )
+    client_factory = MagicMock(return_value=client)
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+
+    assert await signer._session_panel_checkin(action) is True
+
+    signer.app.invoke.assert_awaited_once()
+    request = signer.app.invoke.call_args.args[0]
+    assert type(request).__name__ == "RequestMainWebView"
+    assert request.peer == request.bot == "bot-peer"
+    assert client_factory.call_args.kwargs["base_url"] == "https://panel.example.com"
+    assert client.calls == [
+        ("POST", "/api/auth/telegram", {"initData": "user=%7B%7D"}),
+        ("GET", "/api/miniapp/bootstrap", None),
+    ]
 
 
 @pytest.mark.asyncio

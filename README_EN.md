@@ -316,16 +316,12 @@ This action also supports:
 - image captchas solved by 2Captcha OCR
 - Cloudflare Turnstile
 
-#### Bot App short name MiniApp (for example `t.me/<bot>/miniapp`)
+#### Mini App entry points for session check-in (action 10)
 
-Some bots expose their MiniApp through a Bot App short-name link instead of a
-menu button or a standard `web_app` button.
-
-For this kind of site, when using `Session panel check-in (session)` (action 10),
-you can additionally configure:
-
-- `bot_username`: the bot username
-- `webapp_short_name`: for example `miniapp`
+- Set `bot_username` to the bot's username.
+- Set `webapp_use_main: true` to open the bot's main Mini App through Telegram. This takes precedence over the short name and menu button.
+- Set `webapp_short_name` for links such as `t.me/<bot>/miniapp`.
+- When both entry point settings are omitted, the bot's menu button is used.
 
 Example for zzmeb:
 
@@ -333,7 +329,8 @@ Example for zzmeb:
 {
   "action": 10,
   "bot_username": "zzmeb_bot",
-  "webapp_short_name": "miniapp",
+  "webapp_use_main": true,
+  "api_base_url": "https://user.090911.xyz",
   "profile_endpoint": "/api/miniapp/bootstrap",
   "already_signed_path": "data.profile.checkedInToday",
   "checkin_endpoint": "/api/user/checkin"
@@ -349,8 +346,8 @@ A reusable template file is also included in the repository:
 
 This template is suitable when you want to:
 
-- click the Bot-side `🎯 Check-in` button first
-- then run MiniApp session check-in through `t.me/<bot>/miniapp`
+- click the bot's `🎯 Check-in` button and answer the arithmetic question with action 9, which requires a configured language model
+- then check in through the main Mini App
 - use `/api/miniapp/bootstrap` to detect the already-signed state
 - use `/api/user/checkin` for the MiniApp user-center check-in
 

@@ -309,15 +309,12 @@ tg-signer run linuxdo
 2. WebApp 内图片验证码，使用 2Captcha OCR 识别后回填
 3. Cloudflare Turnstile，人机验证通过后再继续点击业务按钮
 
-#### Bot App short name MiniApp（如 `t.me/<bot>/miniapp`）
+#### 面板接口签到的小程序入口（动作 10）
 
-部分 Bot 的小程序入口不是菜单按钮，也不是标准 `web_app` 按钮，而是
-`t.me/<bot>/<short_name>` 形式的 Bot App short name 链接。
-
-对于这类站点，如果你使用 `面板接口签到(session)`（动作 10），可以额外配置：
-
-- `bot_username`：Bot 用户名
-- `webapp_short_name`：例如 `miniapp`
+- `bot_username` 填写 Bot 用户名。
+- `webapp_use_main: true` 通过 Telegram 打开 Bot 的主小程序，优先于短名和菜单按钮。
+- `webapp_short_name` 用于 `t.me/<bot>/<short_name>` 形式的链接，例如 `miniapp`。
+- 两项入口配置均省略时，使用 Bot 的菜单按钮。
 
 例如娘口三三可使用：
 
@@ -325,7 +322,8 @@ tg-signer run linuxdo
 {
   "action": 10,
   "bot_username": "zzmeb_bot",
-  "webapp_short_name": "miniapp",
+  "webapp_use_main": true,
+  "api_base_url": "https://user.090911.xyz",
   "profile_endpoint": "/api/miniapp/bootstrap",
   "already_signed_path": "data.profile.checkedInToday",
   "checkin_endpoint": "/api/user/checkin"
@@ -341,8 +339,8 @@ tg-signer run linuxdo
 
 该模板适用于：
 
-- 先点击 Bot 内 `🎯 签到`
-- 再进入 `t.me/<bot>/miniapp` 对应的 MiniApp session 签到
+- 先点击 Bot 内 `🎯 签到`，使用动作 9 回答算术选择题。动作 9 需要配置大模型。
+- 再通过主小程序进入面板签到
 - 使用 `/api/miniapp/bootstrap` 判断是否已签
 - 使用 `/api/user/checkin` 执行用户中心签到
 

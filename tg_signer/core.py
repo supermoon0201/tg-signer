@@ -4327,7 +4327,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         return cur
 
     async def _get_webapp_init_data(
-        self, bot_username: str, webapp_short_name: Optional[str] = None
+        self,
+        bot_username: str,
+        webapp_short_name: Optional[str] = None,
+        *,
+        use_main: bool = False,
     ) -> tuple[Optional[str], Optional[str]]:
         """获取 bot 的 WebApp 入口 URL 与 initData(tgWebAppData)。"""
         from urllib.parse import parse_qs, urlparse
@@ -4337,6 +4341,19 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         from pyrogram.raw.types import InputBotAppShortName
 
         bot_peer = await self.app.resolve_peer(bot_username)
+        if use_main:
+            from pyrogram.raw.functions.messages import RequestMainWebView
+
+            auth = await self._call_telegram_api(
+                "获取主小程序授权链接",
+                lambda: self.app.invoke(
+                    RequestMainWebView(peer=bot_peer, bot=bot_peer, platform="ios")
+                ),
+            )
+            params = parse_qs(urlparse(auth.url).fragment)
+            init_data = params.get("tgWebAppData", [""])[0]
+            return auth.url, init_data
+
         if webapp_short_name:
             try:
                 input_app = InputBotAppShortName(
@@ -4384,7 +4401,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def _session_panel_checkin(self, action: SessionPanelCheckinAction) -> bool:
         """基于 session(cookie) 的面板接口签到。
 
-        流程: RequestWebView 取 initData -> POST auth_endpoint 换 session ->
+        流程: 获取小程序 initData -> POST auth_endpoint 换 session ->
         GET profile_endpoint 预检是否已签 -> POST checkin_endpoint 签到。
         """
         from urllib.parse import urlparse
@@ -4393,6 +4410,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             menu_url, init_data = await self._get_webapp_init_data(
                 action.bot_username,
                 action.webapp_short_name,
+                use_main=action.webapp_use_main,
             )
         except Exception as e:
             self.log(f"获取 WebApp initData 失败: {e}", level="ERROR")
