@@ -37,6 +37,7 @@ from pyrogram.storage import SQLiteStorage
 from pyrogram.types import (
     Chat,
     Folder,
+    ForumTopic,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -83,6 +84,7 @@ from .utils import get_timezone as _get_timezone
 logger = logging.getLogger("tg-signer")
 
 DICE_EMOJIS = ("🎲", "🎯", "🏀", "⚽", "🎳", "🎰")
+_PROXY_DEFAULT_PORTS = {"socks4": 1080, "socks5": 1080, "http": 8080}
 TURNSTILE_HOOK_SCRIPT = """
 (() => {
   if (window.__tgSignerTurnstileHookInstalled) {
@@ -351,10 +353,10 @@ def chat_has_forum_topics(chat: Chat) -> bool:
     )
 
 
-def readable_topic(topic) -> str:
+def readable_topic(topic: ForumTopic) -> str:
     none_or_dash = lambda x: x or "-"  # noqa: E731
     return (
-        f"message_thread_id: {topic.id}, title: {none_or_dash(topic.title)}, "
+        f"message_thread_id: {topic.id}, title: {none_or_dash(topic.name)}, "
         f"closed: {bool(getattr(topic, 'is_closed', False))}, "
         f"pinned: {bool(getattr(topic, 'is_pinned', False))}"
     )
@@ -441,9 +443,10 @@ class Client(SafeGetForumTopics, BaseClient):
         return self.session_string
 
     async def log_out(self):
-        await super().log_out()
+        result = await super().log_out()
         if self.session_string_file.is_file():
             os.remove(self.session_string_file)
+        return result
 
 
 def get_api_config():
@@ -459,7 +462,7 @@ def get_proxy(proxy: str = None):
         return {
             "scheme": r.scheme,
             "hostname": r.hostname,
-            "port": r.port,
+            "port": r.port or _PROXY_DEFAULT_PORTS.get(r.scheme),
             "username": r.username,
             "password": r.password,
         }
@@ -518,6 +521,17 @@ def make_dirs(path: pathlib.Path, exist_ok=True):
     return path
 
 
+def get_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
+
 ConfigT = TypeVar("ConfigT", bound=BaseJSONConfig)
 ApiCallResultT = TypeVar("ApiCallResultT")
 
@@ -545,15 +559,14 @@ class BaseUserWorker(Generic[ConfigT]):
         self._proxy = proxy
         if workdir:
             self._workdir = pathlib.Path(workdir)
+        self.loop = loop if loop is not None else get_event_loop()
         self.app = get_client(
             account,
             proxy,
             workdir=self._session_dir,
             session_string=session_string,
             in_memory=in_memory,
-            loop=loop,
         )
-        self.loop = self.app.loop
         self.user: Optional[User] = None
         self._config = None
         self.context = self.ensure_ctx()
@@ -561,12 +574,8 @@ class BaseUserWorker(Generic[ConfigT]):
     def ensure_ctx(self):
         return {}
 
-    def app_run(self, coroutine=None):
-        if coroutine is not None:
-            run = self.loop.run_until_complete
-            run(coroutine)
-        else:
-            self.app.run()
+    def app_run(self, coroutine):
+        self.loop.run_until_complete(coroutine)
 
     @property
     def workdir(self) -> pathlib.Path:
@@ -837,6 +846,7 @@ class BaseUserWorker(Generic[ConfigT]):
             _LOGIN_USERS.pop(self.app.key, None)
             self.user = None
             return None
+        await self.app.initialize()
         result = await self.app.log_out()
         _LOGIN_USERS.pop(self.app.key, None)
         self.user = None
@@ -3552,7 +3562,24 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             answer = answer.strip()
             self.log(f"回答为: {answer}")
             if option_to_btn:
-                target_btn = option_to_btn.get(_normalize_option_text(answer))
+                normalized_answer = _normalize_option_text(answer)
+                target_btn = option_to_btn.get(normalized_answer)
+                if not target_btn:
+                    # 保留原样匹配的优先级，兼容模型为答案添加成对引号。
+                    for opening, closing in [
+                        ('"', '"'),
+                        ("'", "'"),
+                        ("“", "”"),
+                        ("‘", "’"),
+                        ("`", "`"),
+                    ]:
+                        if (
+                            len(normalized_answer) >= 2
+                            and normalized_answer.startswith(opening)
+                            and normalized_answer.endswith(closing)
+                        ):
+                            target_btn = option_to_btn.get(normalized_answer[1:-1])
+                            break
                 if not target_btn:
                     self.log("未找到匹配的按钮", level="WARNING")
                     return False
